@@ -1,0 +1,16 @@
+requests
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+oauth2client
+pandas
+pytz
+beautifulsoup4
+groq
+google-genai
+huggingface_hub
+transformers
+torch
+sentencepiece
+tokenizers

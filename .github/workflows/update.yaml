@@ -1,0 +1,72 @@
+name: NNSE Market Pipeline
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # Every 30 minutes
+  workflow_dispatch:          # Manual trigger button
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      # ── Setup ──
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create credentials.json from secret
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+
+      # ── Step 1: Scrape Data Sources ──
+      - name: Scrape NSE announcements
+        run: python NNSE.py
+        continue-on-error: true
+
+      - name: Scrape BSE announcements
+        run: python BSE.py
+        continue-on-error: true
+
+      - name: Scrape Economic Times
+        run: python et.py
+        continue-on-error: true
+
+      - name: Scrape MoneyControl
+        run: python monc.py
+        continue-on-error: true
+
+      # ── Step 2: AI Analysis ──
+      - name: Run consolidated AI analysis
+        run: python consolidated.py
+        continue-on-error: true
+
+      - name: Run words analysis
+        run: python words.py
+        continue-on-error: true
+
+      - name: Run legacy AI script
+        run: python ai.py
+        continue-on-error: true
+
+      # ── Step 3: Multi-AI Signal Engine (main dashboard) ──
+      - name: Run Multi-AI Signal Engine
+        run: python multi_ai.py
+
+      # ── Step 4: Nifty Direction Bias ──
+      - name: Run Nifty Move bias
+        run: python nifty_move.py
+        continue-on-error: true
