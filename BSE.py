@@ -76,25 +76,19 @@ for item in data["Table"]:
 # UPDATE GOOGLE SHEET
 # ---------------------------
 
-sheet.clear()
+ist = pytz.timezone("Asia/Kolkata")
+now = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
 
-sheet.append_row([
+data = [[
     "SYMBOL",
     "COMPANY NAME",
     "ANNOUNCEMENT",
     "CATEGORY"
-])
+]] + rows
+data.append([])
+data.append(["Last Updated:", now])
 
-sheet.append_rows(rows)
-
-# ---------------------------
-# ADD LAST UPDATED TIME
-# ---------------------------
-
-ist = pytz.timezone("Asia/Kolkata")
-now = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
-
-sheet.append_row([])
-sheet.append_row(["Last Updated:", now])
+sheet.clear()
+sheet.update("A1", data)
 
 print("BSE announcements updated:", len(rows))

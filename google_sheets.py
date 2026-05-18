@@ -20,7 +20,7 @@ def authorize_google_sheets(credentials):
 # your existing update_google_sheet_by_name and append_footer functions remain unchanged
 
 
-def update_google_sheet_by_name(sheet_id, worksheet_name, headers, rows):
+def update_google_sheet_by_name(sheet_id, worksheet_name, headers, rows, footer_row=None):
     try:
         credentials = get_google_credentials()
         gc = authorize_google_sheets(credentials)
@@ -31,9 +31,13 @@ def update_google_sheet_by_name(sheet_id, worksheet_name, headers, rows):
         except gspread.exceptions.WorksheetNotFound:
             worksheet = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
 
+        data = [headers] + rows
+        if footer_row:
+            data.append([])
+            data.append(footer_row)
+
         worksheet.clear()
-        worksheet.append_row(headers)
-        worksheet.append_rows(rows)
+        worksheet.update("A1", data)
         print(f"✅ Data updated in worksheet: {worksheet_name}")
 
     except Exception as e:
@@ -45,10 +49,9 @@ def append_footer(sheet_id, worksheet_name, footer_row):
         gc = authorize_google_sheets(credentials)
         worksheet = gc.open_by_key(sheet_id).worksheet(worksheet_name)
 
-        # Get number of columns from the sheet
-        
-
-        worksheet.append_row(footer_row)
+        existing = worksheet.get_all_values()
+        next_row = len(existing) + 1
+        worksheet.update(f"A{next_row}", [footer_row])
         print("🕒 Timestamp footer appended.")
     except Exception as e:
         print(f"❌ Footer append error: {e}")

@@ -534,45 +534,36 @@ for row in existing:
             old_signals.append(row[:7])
 
 # ── Unmerge everything + clear ──
-try:
-    ss.batch_update({"requests": [{"unmergeCells": {
-        "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 2000,
-                  "startColumnIndex": 0, "endColumnIndex": 26}
-    }}]})
-except: pass
-out.clear()
+with_sheets_backoff(lambda: out.clear())
+
+batch_requests = [{"unmergeCells": {
+    "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 2000,
+              "startColumnIndex": 0, "endColumnIndex": 26}
+}}]
 
 # ── Paint entire visible area dark ──
-try:
-    ss.batch_update({"requests": [{
-        "repeatCell": {
-            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 200,
-                      "startColumnIndex": 0, "endColumnIndex": 26},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": C_BG,
-                "textFormat": {"foregroundColor": C_LGRAY, "fontFamily": "Inter", "fontSize": 10}
-            }},
-            "fields": "userEnteredFormat(backgroundColor,textFormat)"
-        }
-    }]})
-except: pass
+batch_requests.append({"repeatCell": {
+    "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 200,
+              "startColumnIndex": 0, "endColumnIndex": 26},
+    "cell": {"userEnteredFormat": {
+        "backgroundColor": C_BG,
+        "textFormat": {"foregroundColor": C_LGRAY, "fontFamily": "Inter", "fontSize": 10}
+    }},
+    "fields": "userEnteredFormat(backgroundColor,textFormat)"
+}})
 
 # ── Column widths (A-G data + H-Z narrow filler) ──
-try:
-    data_widths = [115, 85, 180, 75, 120, 65, 550]
-    reqs = []
-    for i, w in enumerate(data_widths):
-        reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": i, "endIndex": i+1},
-            "properties": {"pixelSize": w}, "fields": "pixelSize"
-        }})
-    # Shrink columns H-Z so they don't show white
-    reqs.append({"updateDimensionProperties": {
-        "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 7, "endIndex": 26},
-        "properties": {"pixelSize": 20}, "fields": "pixelSize"
+data_widths = [115, 85, 180, 75, 120, 65, 550]
+for i, w in enumerate(data_widths):
+    batch_requests.append({"updateDimensionProperties": {
+        "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+        "properties": {"pixelSize": w}, "fields": "pixelSize"
     }})
-    ss.batch_update({"requests": reqs})
-except: pass
+# Shrink columns H-Z so they don't show white
+batch_requests.append({"updateDimensionProperties": {
+    "range": {"sheetId": sid, "dimension": "COLUMNS", "startIndex": 7, "endIndex": 26},
+    "properties": {"pixelSize": 20}, "fields": "pixelSize"
+}})
 
 # ── Current run stats ──
 buys   = sum(1 for r in results if "BUY" in r["action"])
@@ -588,80 +579,6 @@ elif sells > buys:   sentiment, s_col = "BEARISH ▼", C_RED
 else:                sentiment, s_col = "NEUTRAL ●", C_AMBER
 
 mode_str = "5-MODEL" if gemini_disabled else "6-MODEL"
-
-# =====================================================
-# ROWS 1-9: LIVE DASHBOARD (refreshed each run)
-# =====================================================
-
-# Row 1: Title bar
-with_sheets_backoff(lambda: out.update(values=[["  MULTI-AI SIGNAL ENGINE"]], range_name="A1"))
-out.merge_cells("A1:G1", merge_type="MERGE_ALL")
-qfmt("A1:G1", fmt(bg=C_TITLE, fg=C_WHITE, bold=True, size=14))
-ctr("A1:G1")
-
-# Row 2: Timestamp + run info
-run_info = f"{ist_date}  ·  {ist_time} IST  ·  {mode_str}  ·  Scanned: {len(filtered)}  ·  Skipped: {skipped}"
-with_sheets_backoff(lambda: out.update(values=[[run_info]], range_name="A2"))
-out.merge_cells("A2:G2", merge_type="MERGE_ALL")
-qfmt("A2:G2", fmt(bg=C_SUB_BG, fg=C_DGRAY, size=9))
-ctr("A2:G2")
-
-# Row 3: Spacer (tiny)
-with_sheets_backoff(lambda: out.update(values=[[""]], range_name="A3"))
-
-# Row 4: Stats row 1 — BUY / SELL / Sentiment
-with_sheets_backoff(lambda: out.update(values=[["  BUY SIGNALS", str(buys), "", "  SELL SIGNALS", str(sells), "", f"  {sentiment}"]], range_name="A4:G4"))
-qfmt("A4", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("B4", fmt(bg=C_CARD, fg=C_GREEN, bold=True, size=16))
-qfmt("C4", fmt(bg=C_BG, size=4))
-qfmt("D4", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("E4", fmt(bg=C_CARD, fg=C_RED, bold=True, size=16))
-qfmt("F4", fmt(bg=C_BG, size=4))
-qfmt("G4", fmt(bg=C_CARD, fg=s_col, bold=True, size=14))
-ctr("A4:G4")
-
-# Row 5: Stats row 2 — Avg Score / Top Pick / History count
-with_sheets_backoff(lambda: out.update(values=[["  AVG SCORE", f"{avg_sc}%", "", "  TOP PICK", top_pk, "", f"  {total_hist} total signals"]], range_name="A5:G5"))
-qfmt("A5", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("B5", fmt(bg=C_CARD, fg=C_GOLD, bold=True, size=16))
-qfmt("C5", fmt(bg=C_BG, size=4))
-qfmt("D5", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("E5", fmt(bg=C_CARD, fg=C_WHITE, bold=True, size=12))
-qfmt("F5", fmt(bg=C_BG, size=4))
-qfmt("G5", fmt(bg=C_CARD, fg=C_DGRAY, size=9))
-ctr("A5:G5")
-
-# Row 6: Strong signals detail
-with_sheets_backoff(lambda: out.update(values=[["  STRONG BUY", str(s_buys), "", "  STRONG SELL", str(s_sells), "", ""]], range_name="A6:G6"))
-qfmt("A6", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("B6", fmt(bg=C_CARD, fg=C_GREEN, bold=True, size=16))
-qfmt("C6", fmt(bg=C_BG, size=4))
-qfmt("D6", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
-qfmt("E6", fmt(bg=C_CARD, fg=C_RED, bold=True, size=16))
-qfmt("F6:G6", fmt(bg=C_BG, size=4))
-ctr("A6:G6")
-
-# Row 7: Spacer
-with_sheets_backoff(lambda: out.update(values=[[""]], range_name="A7"))
-
-# Row 8: History section divider
-with_sheets_backoff(lambda: out.update(values=[["SIGNAL HISTORY"]], range_name="A8"))
-out.merge_cells("A8:G8", merge_type="MERGE_ALL")
-qfmt("A8:G8", fmt(bg=C_DIVIDER, fg=C_GOLD, bold=True, size=11))
-ctr("A8:G8")
-
-# Row 9: Column headers
-with_sheets_backoff(lambda: out.update(values=[["DATE", "TIME", "TICKER", "SOURCE", "ACTION", "SCORE", "REASON"]], range_name="A9:G9"))
-qfmt("A9:G9", fmt(bg=C_HDR, fg=C_GOLD, bold=True, size=10))
-ctr("A9:G9")
-
-# Freeze top 9 rows
-try:
-    ss.batch_update({"requests": [{"updateSheetProperties": {
-        "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 9}},
-        "fields": "gridProperties.frozenRowCount"
-    }}]})
-except: pass
 
 # =====================================================
 # ROW 10+: SIGNAL HISTORY (accumulates over runs)
@@ -680,9 +597,97 @@ for r in results:
 # Newest on top
 all_signals = new_signals + old_signals
 
-if all_signals:
-    with_sheets_backoff(lambda: out.append_rows(all_signals))
+# =====================================================
+# ROWS 1-9: LIVE DASHBOARD (refreshed each run)
+# =====================================================
 
+# Merge title, run info, and history divider
+batch_requests.append({"mergeCells": {
+    "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+              "startColumnIndex": 0, "endColumnIndex": 7},
+    "mergeType": "MERGE_ALL"
+}})
+batch_requests.append({"mergeCells": {
+    "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 2,
+              "startColumnIndex": 0, "endColumnIndex": 7},
+    "mergeType": "MERGE_ALL"
+}})
+batch_requests.append({"mergeCells": {
+    "range": {"sheetId": sid, "startRowIndex": 7, "endRowIndex": 8,
+              "startColumnIndex": 0, "endColumnIndex": 7},
+    "mergeType": "MERGE_ALL"
+}})
+
+# Freeze top 9 rows
+batch_requests.append({"updateSheetProperties": {
+    "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 9}},
+    "fields": "gridProperties.frozenRowCount"
+}})
+
+with_sheets_backoff(lambda: ss.batch_update({"requests": batch_requests}))
+
+run_info = f"{ist_date}  ·  {ist_time} IST  ·  {mode_str}  ·  Scanned: {len(filtered)}  ·  Skipped: {skipped}"
+dashboard_updates = [
+    {"range": "A1", "values": [["  MULTI-AI SIGNAL ENGINE"]]},
+    {"range": "A2", "values": [[run_info]]},
+    {"range": "A3", "values": [[""]]},
+    {"range": "A4:G4", "values": [["  BUY SIGNALS", str(buys), "", "  SELL SIGNALS", str(sells), "", f"  {sentiment}"]]},
+    {"range": "A5:G5", "values": [["  AVG SCORE", f"{avg_sc}%", "", "  TOP PICK", top_pk, "", f"  {total_hist} total signals"]]},
+    {"range": "A6:G6", "values": [["  STRONG BUY", str(s_buys), "", "  STRONG SELL", str(s_sells), "", ""]]},
+    {"range": "A7", "values": [[""]]},
+    {"range": "A8", "values": [["SIGNAL HISTORY"]]},
+    {"range": "A9:G9", "values": [["DATE", "TIME", "TICKER", "SOURCE", "ACTION", "SCORE", "REASON"]]},
+]
+
+if all_signals:
+    dashboard_updates.append({"range": "A10", "values": all_signals})
+else:
+    dashboard_updates.append({"range": "A10:G10", "values": [[
+        ist_date, ist_time, "—", "—", "NO SIGNALS", "0",
+        f"{len(filtered)} analyzed — no actionable triggers found"
+    ]]})
+
+with_sheets_backoff(lambda: out.batch_update(dashboard_updates))
+
+qfmt("A1:G1", fmt(bg=C_TITLE, fg=C_WHITE, bold=True, size=14))
+ctr("A1:G1")
+
+qfmt("A2:G2", fmt(bg=C_SUB_BG, fg=C_DGRAY, size=9))
+ctr("A2:G2")
+
+qfmt("A4", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("B4", fmt(bg=C_CARD, fg=C_GREEN, bold=True, size=16))
+qfmt("C4", fmt(bg=C_BG, size=4))
+qfmt("D4", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("E4", fmt(bg=C_CARD, fg=C_RED, bold=True, size=16))
+qfmt("F4", fmt(bg=C_BG, size=4))
+qfmt("G4", fmt(bg=C_CARD, fg=s_col, bold=True, size=14))
+ctr("A4:G4")
+
+qfmt("A5", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("B5", fmt(bg=C_CARD, fg=C_GOLD, bold=True, size=16))
+qfmt("C5", fmt(bg=C_BG, size=4))
+qfmt("D5", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("E5", fmt(bg=C_CARD, fg=C_WHITE, bold=True, size=12))
+qfmt("F5", fmt(bg=C_BG, size=4))
+qfmt("G5", fmt(bg=C_CARD, fg=C_DGRAY, size=9))
+ctr("A5:G5")
+
+qfmt("A6", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("B6", fmt(bg=C_CARD, fg=C_GREEN, bold=True, size=16))
+qfmt("C6", fmt(bg=C_BG, size=4))
+qfmt("D6", fmt(bg=C_CARD_LBL, fg=C_CYAN, bold=True, size=9))
+qfmt("E6", fmt(bg=C_CARD, fg=C_RED, bold=True, size=16))
+qfmt("F6:G6", fmt(bg=C_BG, size=4))
+ctr("A6:G6")
+
+qfmt("A8:G8", fmt(bg=C_DIVIDER, fg=C_GOLD, bold=True, size=11))
+ctr("A8:G8")
+
+qfmt("A9:G9", fmt(bg=C_HDR, fg=C_GOLD, bold=True, size=10))
+ctr("A9:G9")
+
+if all_signals:
     for idx, sig in enumerate(all_signals):
         rn = 10 + idx
         rng = f"A{rn}:G{rn}"
@@ -704,8 +709,6 @@ if all_signals:
         ctr(f"A{rn}:F{rn}")
         lft(f"G{rn}")
 else:
-    with_sheets_backoff(lambda: out.update(values=[[ist_date, ist_time, "—", "—", "NO SIGNALS", "0",
-        f"{len(filtered)} analyzed — no actionable triggers found"]], range_name="A10:G10"))
     qfmt("A10:G10", fmt(bg=C_BG, fg=C_LGRAY, size=10))
     ctr("A10:F10")
     lft("G10")

@@ -279,10 +279,12 @@ def run():
 
     output.sort(key=lambda x: x[3], reverse=True)
 
+    rows_to_append = []
     if output:
-        ws.append_rows(output)
+        rows_to_append.extend(output)
 
-    ws.append_row(["Last Updated (IST):", get_ist_time()])
+    rows_to_append.append(["Last Updated (IST):", get_ist_time()])
+    ws.append_rows(rows_to_append)
 
 # =============================
 # RUN

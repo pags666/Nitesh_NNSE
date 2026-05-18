@@ -506,24 +506,21 @@ if not existing_data:
 
 
 # =========================================================
-# APPEND RESULTS
+# APPEND RESULTS + TIMESTAMP
 # =========================================================
-for row in results:
+rows_to_append = list(results)
 
-    output_ws.append_row(row)
-
-
-# =========================================================
-# TIMESTAMP
-# =========================================================
 ist_time = datetime.now(
     ZoneInfo("Asia/Kolkata")
 ).strftime("%Y-%m-%d %H:%M:%S")
 
-output_ws.append_row([
+rows_to_append.append([
     "Updated (IST)",
     ist_time
 ])
+
+if rows_to_append:
+    output_ws.append_rows(rows_to_append)
 
 
 # =========================================================

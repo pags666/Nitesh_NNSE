@@ -84,21 +84,15 @@ df = pd.DataFrame(rows, columns=[
 # UPLOAD TO GOOGLE SHEET
 # -------------------------
 
-sheet.clear()
-
-sheet.update(
-    [df.columns.values.tolist()] + df.values.tolist()
-)
-
-# -------------------------
-# ADD LAST UPDATED TIME
-# -------------------------
-
 ist = pytz.timezone("Asia/Kolkata")
 now = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
 
-sheet.append_row([])
-sheet.append_row(["Last Updated:", now])
+data = [df.columns.values.tolist()] + df.values.tolist()
+data.append([])
+data.append(["Last Updated:", now])
+
+sheet.clear()
+sheet.update("A1", data)
 
 print("Uploaded to Google Sheet successfully")
 print("Last Updated:", now)

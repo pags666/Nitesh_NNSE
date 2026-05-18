@@ -222,9 +222,10 @@ existing_data = out.get_all_values()
 if not existing_data:
     out.append_row(["Ticker","Action","Confidence","Reason"])
 
-# Append new rows
+# Append new rows + timestamp in one request
+rows_to_append = []
 for r in final_results:
-    out.append_row([
+    rows_to_append.append([
         r["ticker"],
         r["action"],
         r["confidence"],
@@ -232,16 +233,13 @@ for r in final_results:
     ])
 
 print(f"\n✅ Appended: {len(final_results)} signals")
-# =========================
-# ADD TIMESTAMP
-# =========================
-# =========================
-# IST TIMESTAMP
-# =========================
-ist_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
 
-out.append_row([])
-out.append_row(["Last Updated", ist_time])
+ist_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
+rows_to_append.append([])
+rows_to_append.append(["Last Updated", ist_time])
+
+if rows_to_append:
+    out.append_rows(rows_to_append)
 
 # optional formatting
 last_row = len(out.get_all_values())

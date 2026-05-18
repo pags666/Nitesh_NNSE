@@ -4,7 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo  # ✅ IST support
 
 # import your existing google sheets module
-from google_sheets import update_google_sheet_by_name, append_footer
+from google_sheets import update_google_sheet_by_name
 
 BASE = "https://economictimes.indiatimes.com"
 URL = "https://economictimes.indiatimes.com/markets/stocks/news"
@@ -46,15 +46,10 @@ WORKSHEET = "et"
 
 headers = [ "SUBJECT"]
 
-# update sheet
-update_google_sheet_by_name(SHEET_ID, WORKSHEET, headers, rows)
-
 # ---------------- IST TIMESTAMP ---------------- #
 
 ist_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
 
-append_footer(
-    SHEET_ID,
-    WORKSHEET,
-    ["Updated (IST):", ist_time]
-)
+# update sheet
+footer = ["Updated (IST):", ist_time]
+update_google_sheet_by_name(SHEET_ID, WORKSHEET, headers, rows, footer_row=footer)
