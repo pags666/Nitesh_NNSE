@@ -1,9 +1,20 @@
-name: NNSE Market Pipeline
+name: NNSE Signal Pipeline
+
+# ============================================
+# SCHEDULE: Every 25 min, 6 AM to 7 PM IST, Mon-Fri
+#
+# IST to UTC conversion:
+#   6:00 AM IST = 00:30 UTC
+#   7:00 PM IST = 13:30 UTC
+#
+# Cron: */25 minutes, hours 0-13 UTC, Mon-Fri
+# Actual window: ~5:30 AM to ~6:50 PM IST
+# ============================================
 
 on:
   schedule:
-    - cron: "*/20 * * * *"   # Every 20 minutes
-  workflow_dispatch:          # Manual trigger button
+    - cron: "*/25 0-13 * * 1-5"   # Every 25 min, 6AM-7PM IST, Mon-Fri
+  workflow_dispatch:               # Manual trigger button
 
 jobs:
   run-pipeline:
@@ -14,6 +25,8 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       # ── Setup ──
@@ -33,41 +46,65 @@ jobs:
       - name: Create credentials.json from secret
         run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
 
+      # ── IST Time Gate ──
+      # Skip if outside 6 AM - 7 PM IST window
+      - name: Check IST time window
+        id: time_check
+        run: |
+          IST_HOUR=$(TZ="Asia/Kolkata" date +%H)
+          echo "IST Hour: $IST_HOUR"
+          if [ "$IST_HOUR" -ge 6 ] && [ "$IST_HOUR" -lt 19 ]; then
+            echo "in_window=true" >> $GITHUB_OUTPUT
+            echo "Within 6 AM - 7 PM IST window"
+          else
+            echo "in_window=false" >> $GITHUB_OUTPUT
+            echo "Outside window - skipping"
+          fi
+
       # ── Step 1: Scrape Data Sources ──
       - name: Scrape NSE announcements
+        if: steps.time_check.outputs.in_window == 'true'
         run: python NNSE.py
         continue-on-error: true
 
       - name: Scrape BSE announcements
+        if: steps.time_check.outputs.in_window == 'true'
         run: python BSE.py
         continue-on-error: true
 
       - name: Scrape Economic Times
+        if: steps.time_check.outputs.in_window == 'true'
         run: python et.py
         continue-on-error: true
 
       - name: Scrape MoneyControl
+        if: steps.time_check.outputs.in_window == 'true'
         run: python monc.py
         continue-on-error: true
 
-      # ── Step 2: AI Analysis ──
+      # ── Step 2: Signal Engines ──
       - name: Run consolidated AI analysis
+        if: steps.time_check.outputs.in_window == 'true'
         run: python consolidated.py
         continue-on-error: true
 
-      - name: Run words analysis
+      - name: Run WORDF v3 keyword engine
+        if: steps.time_check.outputs.in_window == 'true'
         run: python words.py
         continue-on-error: true
 
       - name: Run legacy AI script
+        if: steps.time_check.outputs.in_window == 'true'
         run: python ai.py
         continue-on-error: true
 
-      # ── Step 3: Multi-AI Signal Engine (main dashboard) ──
-      - name: Run Multi-AI Signal Engine
+      # ── Step 3: Multi-AI v4 Signal Engine ──
+      - name: Run Multi-AI v4 Signal Engine
+        if: steps.time_check.outputs.in_window == 'true'
         run: python multi_ai.py
 
       # ── Step 4: Nifty Direction Bias ──
       - name: Run Nifty Move bias
+        if: steps.time_check.outputs.in_window == 'true'
         run: python nifty_move.py
         continue-on-error: true

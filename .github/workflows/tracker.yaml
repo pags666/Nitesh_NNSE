@@ -1,0 +1,65 @@
+name: Signal Tracker (After Market Hours)
+
+# ============================================
+# SCHEDULE: Once daily at 4:30 PM IST, Mon-Fri
+#
+# 4:30 PM IST = 11:00 AM UTC
+#
+# This runs AFTER market close (3:30 PM IST)
+# to track signal performance at T+1, T+3, T+7
+# and export pattern reliability scores.
+# ============================================
+
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"        # 4:30 PM IST daily, Mon-Fri
+  workflow_dispatch:               # Manual trigger button
+
+jobs:
+  run-tracker:
+    runs-on: ubuntu-latest
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      # ── Setup ──
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create credentials.json from secret
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+
+      # ── Run Tracker ──
+      - name: Run Signal Tracker
+        run: python tracker.py
+
+      # ── Save pattern scores ──
+      # Commit pattern_scores.json back to repo so
+      # the signal engines can read it on next run
+      - name: Commit pattern scores
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f pattern_scores.json ]; then
+            git add pattern_scores.json
+            git diff --staged --quiet || git commit -m "chore: update pattern_scores.json [auto]"
+            git push
+          else
+            echo "No pattern_scores.json generated"
+          fi
