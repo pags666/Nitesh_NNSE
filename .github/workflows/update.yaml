@@ -12,8 +12,8 @@ name: NNSE Signal Pipeline
 on:
   schedule:
     - cron: "0 0-13 * * 1-5"     # :00 every hour, Mon-Fri
-    - cron: "25 0-13 * * 1-5"    # :25 every hour, Mon-Fri
-    - cron: "50 0-13 * * 1-5"    # :50 every hour, Mon-Fri
+    - cron: "20 0-13 * * 1-5"    # :20 every hour, Mon-Fri
+    - cron: "40 0-13 * * 1-5"    # :40 every hour, Mon-Fri
   workflow_dispatch:              # Manual trigger button
 
 # Prevent overlapping runs — cancel old run if new one starts
