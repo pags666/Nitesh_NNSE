@@ -168,7 +168,43 @@ def sheet_to_records(ws):
     return [dict(zip(headers, r)) for r in rows[1:] if any(r)]
 
 def normalise_ticker(x):
-    return str(x).strip().upper()
+    """
+    Normalise ticker symbol for yfinance compatibility.
+    BSE gives full names like 'SPML INFRA LTD' → 'SPMLINFRA'
+    NSE gives proper tickers like 'SPMLINFRA' → 'SPMLINFRA'
+    """
+    import re
+    t = str(x).strip().upper()
+
+    # Remove common suffixes
+    for suffix in [
+        " LIMITED", " LTD-$", " LTD.", " LTD",
+        " CORPORATION", " CORP", " INDUSTRIES", " INDUSTRY",
+        " TECHNOLOGIES", " TECHNOLOGY", " SOLUTIONS",
+        " ENTERPRISES", " PRIVATE", " PUBLIC",
+    ]:
+        t = t.replace(suffix, "")
+
+    # Remove special characters
+    t = re.sub(r'[^A-Z0-9&]', '', t)
+
+    # Known BSE-to-NSE ticker mappings for common mismatches
+    KNOWN_TICKERS = {
+        "LIFEINSURANCECORPORATIONOFINDIA": "LICI",
+        "BHARATELECTRONICS": "BEL",
+        "BANKOFINDIA": "BANKINDIA",
+        "PARASDEFENCEANDSPACETECHNOLOGIES": "PARAS",
+        "AFCONSINFRASTRUCTURE": "AFCONS",
+        "DEVITINFORMATIONTECHNOLOGY": "DEVIT",
+        "ROYALORCHIDHOTELS": "ROHLTD",
+        "BALAJIAMINES": "BALAMINES",
+        "SUPERCROP SAFE": "SUPERCROPSAFE",
+    }
+
+    if t in KNOWN_TICKERS:
+        return KNOWN_TICKERS[t]
+
+    return t
 
 def _is_write_quota_error(err):
     status = getattr(getattr(err, "response", None), "status_code", None)

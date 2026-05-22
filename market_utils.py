@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 # =============================
 _CACHE = {}
 _CACHE_TTL = 300  # seconds
+_FAILED_SYMBOLS = set()  # Symbols that returned 404 — skip forever this session
 
 def _cache_key(symbol, func_name):
     return f"{symbol}:{func_name}"
@@ -41,8 +42,12 @@ def _cache_set(symbol, func_name, value):
 # =============================
 def _get_ticker(symbol):
     """Try .NS then .BO suffix, return yfinance Ticker object."""
+    if symbol in _FAILED_SYMBOLS:
+        return None, None
     try:
         import yfinance as yf
+        import logging
+        logging.getLogger('yfinance').setLevel(logging.CRITICAL)
         for suffix in [".NS", ".BO"]:
             try:
                 t = yf.Ticker(f"{symbol}{suffix}")
@@ -53,16 +58,22 @@ def _get_ticker(symbol):
                 continue
     except ImportError:
         pass
+    _FAILED_SYMBOLS.add(symbol)
     return None, None
 
 def _get_history(symbol, period="1mo"):
     """Get price history with caching."""
+    if symbol in _FAILED_SYMBOLS:
+        return None
+
     cached = _cache_get(symbol, f"history_{period}")
     if cached is not None:
         return cached
 
     try:
         import yfinance as yf
+        import logging
+        logging.getLogger('yfinance').setLevel(logging.CRITICAL)
         for suffix in [".NS", ".BO"]:
             try:
                 t = yf.Ticker(f"{symbol}{suffix}")
@@ -84,6 +95,10 @@ def get_stock_info(symbol):
     Returns dict with market_cap, avg_volume, current_price, today_change_pct.
     Returns None values on failure.
     """
+    if symbol in _FAILED_SYMBOLS:
+        return {"market_cap": None, "avg_volume": None, "current_price": None,
+                "today_change_pct": None, "sector": None}
+
     cached = _cache_get(symbol, "info")
     if cached is not None:
         return cached
