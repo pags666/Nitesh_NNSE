@@ -1,20 +1,25 @@
 name: NNSE Signal Pipeline
 
 # ============================================
-# SCHEDULE: Every 25 min, 6 AM to 7 PM IST, Mon-Fri
+# SCHEDULE: Every ~25 min, 6 AM to 7 PM IST, Mon-Fri
 #
-# IST to UTC conversion:
-#   6:00 AM IST = 00:30 UTC
-#   7:00 PM IST = 13:30 UTC
+# IST to UTC:  6 AM IST = 00:30 UTC | 7 PM IST = 13:30 UTC
 #
-# Cron: */25 minutes, hours 0-13 UTC, Mon-Fri
-# Actual window: ~5:30 AM to ~6:50 PM IST
+# Using 3 explicit crons (more reliable than */25)
+# Runs at :00, :25, :50 of each hour
 # ============================================
 
 on:
   schedule:
-    - cron: "*/25 0-13 * * 1-5"   # Every 25 min, 6AM-7PM IST, Mon-Fri
-  workflow_dispatch:               # Manual trigger button
+    - cron: "0 0-13 * * 1-5"     # :00 every hour, Mon-Fri
+    - cron: "25 0-13 * * 1-5"    # :25 every hour, Mon-Fri
+    - cron: "50 0-13 * * 1-5"    # :50 every hour, Mon-Fri
+  workflow_dispatch:              # Manual trigger button
+
+# Prevent overlapping runs — cancel old run if new one starts
+concurrency:
+  group: signal-pipeline
+  cancel-in-progress: true
 
 jobs:
   run-pipeline:
