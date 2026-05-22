@@ -26,6 +26,19 @@ from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 import pytz
 
+# ── Market Intelligence + Alerts ──
+try:
+    from market_utils import enrich_signal, check_freshness, load_pattern_scores
+    MARKET_UTILS_OK = True
+except ImportError:
+    MARKET_UTILS_OK = False
+
+try:
+    from alerts import send_alert, send_summary
+    ALERTS_OK = True
+except ImportError:
+    ALERTS_OK = False
+
 # =============================
 # GOOGLE AUTH
 # =============================
@@ -886,6 +899,59 @@ def run():
     if hist_boosts or hist_penalties:
         print(f"Historical: {hist_boosts} boosted, {hist_penalties} penalized")
 
+    # ── MARKET INTELLIGENCE ENRICHMENT ───────────────────────────────────
+    enriched_count = 0
+    freshness_skipped = 0
+    if MARKET_UTILS_OK:
+        print("\nEnriching signals with market intelligence...")
+        for stock, data in stock_scores.items():
+            # Check freshness (already priced in?)
+            is_stale, today_change = check_freshness(stock)
+            if is_stale:
+                # If stock already moved 3%+ in signal direction, suppress
+                if data["buy_score"] > 0 and today_change > 3.0:
+                    data["buy_score"] = 0
+                    data["reasons"].append(f"[STALE] already +{today_change:.1f}% today")
+                    freshness_skipped += 1
+                    continue
+                elif data["sell_score"] < 0 and today_change < -3.0:
+                    data["sell_score"] = 0
+                    data["reasons"].append(f"[STALE] already {today_change:.1f}% today")
+                    freshness_skipped += 1
+                    continue
+
+            # Get direction for enrichment
+            direction = "BUY" if data["buy_score"] > abs(data["sell_score"]) else "SELL"
+
+            # Full enrichment
+            enrichment = enrich_signal(
+                stock, direction, data["reasons"],
+                deal_value_cr=0, sheet_history=ws_history_data
+            )
+
+            # Apply adjustments
+            adj = enrichment["total_adjustment"]
+            tw = enrichment["time_weight"]
+
+            if adj != 0:
+                if direction == "BUY":
+                    data["buy_score"] = int(data["buy_score"] + adj)
+                else:
+                    data["sell_score"] = int(data["sell_score"] - abs(adj))
+
+            # Apply time weight
+            if tw < 1.0:
+                data["buy_score"] = int(data["buy_score"] * tw)
+                data["sell_score"] = int(data["sell_score"] * tw)
+
+            # Add enrichment details to reasons
+            for detail in enrichment["details"]:
+                data["reasons"].append(f"[MKT] {detail}")
+
+            enriched_count += 1
+
+        print(f"Enriched: {enriched_count} stocks | Freshness-skipped: {freshness_skipped}")
+
     # ── EVALUATE SIGNALS ─────────────────────────────────────────────────
     buy_output  = []
     sell_output = []
@@ -995,9 +1061,23 @@ def run():
     ws_out.append_row(["---", "Last Updated (IST):", get_ist_time(), "", "", "", "", "", ""])
     print(f"Results written to 'wordf' sheet.")
 
+    # ── TELEGRAM ALERTS ──────────────────────────────────────────────────
+    alerts_sent = 0
+    if ALERTS_OK and all_output:
+        for row in all_output:
+            stock_sym = row[1]
+            signal_lbl = row[5]
+            conf = row[4]
+            reason_txt = row[7] if len(row) > 7 else ""
+            if send_alert(stock_sym, signal_lbl, conf, reason_txt, source="wordf v3"):
+                alerts_sent += 1
+        if alerts_sent:
+            top_picks = [row[1] for row in all_output[:5]]
+            send_summary(len(buy_output), len(sell_output), top_picks, source="wordf v3")
+
     # ── SUMMARY ──────────────────────────────────────────────────────────
     print(f"\n{'='*W}")
-    print(f"  WORDF v2 SUMMARY")
+    print(f"  WORDF v3 SUMMARY")
     print(f"  Input: {len(deduped_data)} unique entries")
     print(f"  Filtered: {skipped_quality + skipped_compliance + skipped_bse_short + skipped_no_match} total")
     print(f"  Signals: {total} (BUY: {len(buy_output)}, SELL: {len(sell_output)})")
@@ -1005,6 +1085,10 @@ def run():
         print(f"  Historical boosts: {hist_boosts}")
     if price_enriched:
         print(f"  Price enriched: {price_enriched}")
+    if MARKET_UTILS_OK:
+        print(f"  Market enriched: {enriched_count} | Freshness-skipped: {freshness_skipped}")
+    if alerts_sent:
+        print(f"  Telegram alerts: {alerts_sent}")
     print(f"{'='*W}")
 
 # =============================

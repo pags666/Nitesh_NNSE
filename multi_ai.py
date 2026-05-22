@@ -52,6 +52,19 @@ except ImportError:
     WORDF_AVAILABLE = False
     print("[WARN] words.py not importable — running without wordf cross-validation")
 
+# ── Import market intelligence + alerts ──
+try:
+    from market_utils import enrich_signal, check_freshness
+    MARKET_UTILS_OK = True
+except ImportError:
+    MARKET_UTILS_OK = False
+
+try:
+    from alerts import send_alert, alert_from_multi_ai, send_summary
+    ALERTS_OK = True
+except ImportError:
+    ALERTS_OK = False
+
 # Force UTF-8 output on Windows
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -605,6 +618,32 @@ for i, r in enumerate(filtered):
                 consensus["reasoning"] += f" [{hist_analysis}]"
                 hist_applied += 1
 
+    # ── MARKET INTELLIGENCE ENRICHMENT ──
+    if MARKET_UTILS_OK:
+        # Freshness check
+        is_stale, today_change = check_freshness(ticker)
+        if is_stale:
+            if "BUY" in consensus["action"] and today_change > 3.0:
+                print(f"  >>> STALE: already +{today_change:.1f}% today -- suppressed")
+                skipped += 1
+                continue
+            elif "SELL" in consensus["action"] and today_change < -3.0:
+                print(f"  >>> STALE: already {today_change:.1f}% today -- suppressed")
+                skipped += 1
+                continue
+
+        # Full enrichment
+        enrichment = enrich_signal(
+            ticker, consensus["action"],
+            wordf_reasons if WORDF_AVAILABLE else [],
+            sheet_history=ws_history_data
+        )
+        adj = enrichment["total_adjustment"]
+        if adj != 0:
+            consensus["score"] = max(0, min(100, consensus["score"] + adj))
+            for detail in enrichment["details"]:
+                consensus["reasoning"] += f" [{detail}]"
+
     # ── RE-CHECK THRESHOLD after adjustments ──
     if consensus["score"] < NORMAL_THRESHOLD:
         skipped += 1
@@ -919,6 +958,16 @@ else:
 
 flush_formats(out)
 
+# ── Telegram Alerts ──
+alerts_sent = 0
+if ALERTS_OK and results:
+    for r in results:
+        if alert_from_multi_ai(r):
+            alerts_sent += 1
+    if alerts_sent:
+        top_picks = [r["ticker"] for r in results[:5]]
+        send_summary(buys, sells, top_picks, source="multi_ai v4")
+
 # ── Console summary ──
 print(f"\n{'='*70}")
 if results:
@@ -933,6 +982,10 @@ if wordf_boosted:
     print(f"  WORDF CONFIRMED: {wordf_boosted} signals")
 if hist_applied:
     print(f"  HISTORICAL VALIDATION: {hist_applied} signals")
+if MARKET_UTILS_OK:
+    print(f"  MARKET ENRICHMENT: active")
+if alerts_sent:
+    print(f"  TELEGRAM ALERTS: {alerts_sent} sent")
 print(f"  HISTORY: {len(all_signals)} total signals")
 print(f"  TIME: {ist_full}")
 print(f"{'='*70}")
