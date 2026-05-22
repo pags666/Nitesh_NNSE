@@ -553,6 +553,15 @@ if WORDF_AVAILABLE:
     print(f"  Pre-filtered: {skipped_quality} quality | {skipped_compliance} compliance")
     filtered = pre_filtered
 
+# ── Load historical signal data for price validation ──
+ws_history_data = []
+try:
+    ws_hist = ss.worksheet("wordf")
+    ws_history_data = ws_hist.get_all_values()[1:]
+    print(f"  Historical: {len(ws_history_data)} past wordf signals loaded")
+except Exception:
+    print("  Historical: no wordf data found")
+
 # ── v4.2: Liquidity + News Age pre-filtering ──
 if MARKET_UTILS_OK:
     liq_filtered = []
@@ -573,15 +582,6 @@ if MARKET_UTILS_OK:
     print(f"  Pre-filtered: {skipped_liquidity} illiquid | {skipped_old_news} old news")
     filtered = liq_filtered
 print(f"\n  Total: {len(all_rows)} | Unique: {len(unique)} | Filtered: {len(filtered)}")
-
-# ── Load historical signal data for price validation ──
-ws_history_data = []
-try:
-    ws_hist = ss.worksheet("wordf")
-    ws_history_data = ws_hist.get_all_values()[1:]
-    print(f"  Historical: {len(ws_history_data)} past wordf signals loaded")
-except Exception:
-    print("  Historical: no wordf data found")
 
 print("-" * 70)
 
