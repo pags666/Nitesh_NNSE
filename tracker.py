@@ -610,7 +610,124 @@ def compute_pattern_scores(all_results):
     print(f"{'='*70}")
 
 # =============================
+# COMPUTE DYNAMIC MODEL WEIGHTS
+# =============================
+def compute_model_weights():
+    """
+    Analyze multi_ai signal results to determine which AI models
+    are most accurate. Export weights to model_weights.json.
+
+    Reads from tracker sheet: for multi_ai signals, cross-reference
+    the signal reasoning (which contains per-model votes) with actual
+    T+3 results to determine each model's accuracy.
+    """
+    print("\n  Computing dynamic model weights...")
+
+    all_results = read_all_tracker_results()
+    multi_ai_results = [r for r in all_results if r.get("source") == "multi_ai"]
+
+    if len(multi_ai_results) < 5:
+        print(f"  Not enough multi_ai results ({len(multi_ai_results)}) — need at least 5")
+        return
+
+    # Model accuracy tracking
+    model_stats = defaultdict(lambda: {"correct": 0, "wrong": 0, "total": 0})
+
+    # Model name patterns in reasoning: "70B=+85" or "QWN=-90"
+    import re
+    model_pattern = re.compile(r'(70B|8B|SCT|QWN|GEM|FB)=([+\-~])(\d+)')
+
+    for r in multi_ai_results:
+        reason = r.get("reason", "")
+        signal = r.get("signal", "").upper()
+        result_t3 = r.get("r3", "")
+
+        if result_t3 not in ("WIN", "LOSS"):
+            continue  # Skip FLAT/PENDING
+
+        is_buy = "BUY" in signal
+        is_win = result_t3 == "WIN"
+
+        # Extract per-model votes from reasoning
+        matches = model_pattern.findall(reason)
+        for model_name, vote_sign, conf in matches:
+            stats = model_stats[model_name]
+            stats["total"] += 1
+
+            model_said_buy = vote_sign == "+"
+            model_said_sell = vote_sign == "-"
+            model_said_notrade = vote_sign == "~"
+
+            if model_said_notrade:
+                continue  # Can't judge NO TRADE accuracy
+
+            # Model was correct if: said BUY and signal WON as BUY, or said SELL and signal WON as SELL
+            if is_buy and model_said_buy and is_win:
+                stats["correct"] += 1
+            elif not is_buy and model_said_sell and is_win:
+                stats["correct"] += 1
+            elif is_buy and model_said_sell and not is_win:
+                stats["correct"] += 1  # Model correctly disagreed
+            elif not is_buy and model_said_buy and not is_win:
+                stats["correct"] += 1  # Model correctly disagreed
+            else:
+                stats["wrong"] += 1
+
+    if not model_stats:
+        print("  No model-level data found in reasoning strings")
+        return
+
+    # Compute accuracy and weights
+    model_accuracy = {}
+    for model, stats in model_stats.items():
+        total = stats["correct"] + stats["wrong"]
+        if total >= 3:
+            accuracy = stats["correct"] / total
+            model_accuracy[model] = round(accuracy, 3)
+
+    if not model_accuracy:
+        print("  Not enough per-model data (need 3+ decisions each)")
+        return
+
+    # Convert accuracy to weights (normalize so they sum to ~1.0)
+    # Higher accuracy = higher weight
+    total_acc = sum(model_accuracy.values())
+    if total_acc <= 0:
+        return
+
+    weights = {}
+    # Map short names to full names used in multi_ai.py
+    name_map = {"70B": "70B", "8B": "8B", "SCT": "SCOUT", "QWN": "QWEN", "GEM": "GEMINI", "FB": "FINBERT"}
+
+    for model, acc in model_accuracy.items():
+        full_name = name_map.get(model, model)
+        weights[full_name] = round(acc / total_acc, 3)
+
+    # Export
+    output = {
+        "weights": weights,
+        "accuracy": {name_map.get(m, m): a for m, a in model_accuracy.items()},
+        "sample_sizes": {name_map.get(m, m): model_stats[m]["total"] for m in model_accuracy},
+        "last_updated": datetime.now(IST).strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights.json")
+    with open(json_path, "w") as f:
+        json.dump(output, f, indent=2)
+
+    print(f"  Model weights exported to: {json_path}")
+    print(f"\n  MODEL ACCURACY:")
+    for model in sorted(model_accuracy, key=model_accuracy.get, reverse=True):
+        full = name_map.get(model, model)
+        acc = model_accuracy[model]
+        w = weights.get(full, 0)
+        n = model_stats[model]["total"]
+        bar = "+" * int(acc * 20)
+        print(f"    {full:<10} {acc:.0%} accuracy (n={n:>3}) weight={w:.3f}  {bar}")
+
+# =============================
 # ENTRY POINT
 # =============================
 if __name__ == "__main__":
     track_signals()
+    compute_model_weights()

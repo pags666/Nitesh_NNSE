@@ -54,7 +54,10 @@ except ImportError:
 
 # ── Import market intelligence + alerts ──
 try:
-    from market_utils import enrich_signal, check_freshness
+    from market_utils import (
+        enrich_signal, check_freshness, check_liquidity,
+        check_news_age, load_model_weights
+    )
     MARKET_UTILS_OK = True
 except ImportError:
     MARKET_UTILS_OK = False
@@ -90,6 +93,25 @@ WF_8B      = 0.15
 WF_SCOUT   = 0.20
 WF_QWEN    = 0.25   # was 0.20 — boost smartest models
 WF_FINBERT = 0.10   # was 0.15 — demoted
+
+# ── DYNAMIC WEIGHT OVERRIDE ──
+# If tracker.py has computed per-model accuracy, use those weights instead
+_dynamic_weights = None
+if MARKET_UTILS_OK:
+    _dynamic_weights = load_model_weights()
+    if _dynamic_weights:
+        print("[INFO] Dynamic model weights loaded from tracker data")
+        W_70B     = _dynamic_weights.get("70B", W_70B)
+        W_8B      = _dynamic_weights.get("8B", W_8B)
+        W_SCOUT   = _dynamic_weights.get("SCOUT", W_SCOUT)
+        W_QWEN    = _dynamic_weights.get("QWEN", W_QWEN)
+        W_FINBERT = _dynamic_weights.get("FINBERT", W_FINBERT)
+        W_GEMINI  = _dynamic_weights.get("GEMINI", W_GEMINI)
+        WF_70B    = _dynamic_weights.get("70B", WF_70B)
+        WF_8B     = _dynamic_weights.get("8B", WF_8B)
+        WF_SCOUT  = _dynamic_weights.get("SCOUT", WF_SCOUT)
+        WF_QWEN   = _dynamic_weights.get("QWEN", WF_QWEN)
+        WF_FINBERT = _dynamic_weights.get("FINBERT", WF_FINBERT)
 
 # Thresholds (RAISED for reliability)
 STRONG_THRESHOLD = 80    # was 75
@@ -531,6 +553,25 @@ if WORDF_AVAILABLE:
     print(f"  Pre-filtered: {skipped_quality} quality | {skipped_compliance} compliance")
     filtered = pre_filtered
 
+# ── v4.2: Liquidity + News Age pre-filtering ──
+if MARKET_UTILS_OK:
+    liq_filtered = []
+    skipped_liquidity = 0
+    skipped_old_news = 0
+    for r in filtered:
+        # Liquidity check — skip penny/illiquid stocks
+        is_liquid, liq_reason = check_liquidity(r["ticker"])
+        if not is_liquid:
+            skipped_liquidity += 1
+            continue
+        # News age check — skip duplicate/old news
+        is_old, old_detail = check_news_age(r["text"], ws_history_data)
+        if is_old:
+            skipped_old_news += 1
+            continue
+        liq_filtered.append(r)
+    print(f"  Pre-filtered: {skipped_liquidity} illiquid | {skipped_old_news} old news")
+    filtered = liq_filtered
 print(f"\n  Total: {len(all_rows)} | Unique: {len(unique)} | Filtered: {len(filtered)}")
 
 # ── Load historical signal data for price validation ──
@@ -632,11 +673,12 @@ for i, r in enumerate(filtered):
                 skipped += 1
                 continue
 
-        # Full enrichment
+        # Full enrichment (v2 — all 22 checks)
         enrichment = enrich_signal(
             ticker, consensus["action"],
             wordf_reasons if WORDF_AVAILABLE else [],
-            sheet_history=ws_history_data
+            sheet_history=ws_history_data,
+            announcement_text=text,
         )
         adj = enrichment["total_adjustment"]
         if adj != 0:

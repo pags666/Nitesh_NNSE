@@ -49,17 +49,23 @@ jobs:
       - name: Run Signal Tracker
         run: python tracker.py
 
-      # ── Save pattern scores ──
-      # Commit pattern_scores.json back to repo so
-      # the signal engines can read it on next run
-      - name: Commit pattern scores
+      # ── Save feedback data ──
+      # Commit pattern_scores.json and model_weights.json
+      # back to repo so signal engines use them on next run
+      - name: Commit feedback data
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -f pattern_scores.json ]; then
-            git add pattern_scores.json
-            git diff --staged --quiet || git commit -m "chore: update pattern_scores.json [auto]"
+          CHANGED=false
+          for f in pattern_scores.json model_weights.json; do
+            if [ -f "$f" ]; then
+              git add "$f"
+              CHANGED=true
+            fi
+          done
+          if [ "$CHANGED" = true ]; then
+            git diff --staged --quiet || git commit -m "chore: update pattern_scores + model_weights [auto]"
             git push
           else
-            echo "No pattern_scores.json generated"
+            echo "No feedback data generated"
           fi
