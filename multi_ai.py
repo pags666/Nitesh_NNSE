@@ -1,13 +1,24 @@
 """
-MULTI-AI STOCK SIGNAL ENGINE v3 — 5 MODEL EDITION
-===================================================
-Combines 6 AI models for high-accuracy consensus trading signals:
+MULTI-AI STOCK SIGNAL ENGINE v4 — ULTRA-RELIABLE EDITION
+=========================================================
+Combines 6 AI models + wordf keyword cross-validation + historical
+price validation for high-accuracy consensus trading signals:
   1. Groq Llama 3.3 70B    - PRIMARY (smartest, best reasoning)
   2. Groq Llama 3.1 8B     - SECONDARY (fast cross-check)
   3. Groq Llama 4 Scout    - TERTIARY (newest Llama 4)
   4. Groq Qwen3 32B        - QUATERNARY (strong reasoning)
-  5. HuggingFace FinBERT   - NLP financial sentiment
+  5. HuggingFace FinBERT   - NLP sentiment (DEMOTED — tiebreaker only)
   6. Google Gemini          - OPTIONAL bonus (auto-disables on quota)
+
+v4 Changes from v3:
+- wordf v2 cross-validation (catches wrong BUY/SELL direction)
+- Historical price validation (checks if pattern worked before)
+- FinBERT demoted (weight 0.15→0.10, overridden when disagrees with all LLMs)
+- Smart model conflict = hard suppress (70B vs Qwen disagree → NO TRADE)
+- Raised thresholds (MIN_AGREE: 2→3, NORMAL: 50→65, STRONG: 75→80)
+- Compliance/quality pre-filtering (skips junk BEFORE API calls)
+- Improved prompt with Indian market edge cases
+- Price trend context in output
 
 Usage:
   $env:GROQ_API_KEY="..."; $env:GEMINI_API_KEY="..."; $env:HF_TOKEN="..."
@@ -29,6 +40,18 @@ from oauth2client.service_account import ServiceAccountCredentials
 from huggingface_hub import InferenceClient
 from google import genai
 
+# ── Import wordf v2 filters for cross-validation ──
+try:
+    from words import (
+        is_compliance_filing, text_quality_score,
+        event_score as wordf_event_score,
+        analyze_historical_patterns, fetch_price_change,
+    )
+    WORDF_AVAILABLE = True
+except ImportError:
+    WORDF_AVAILABLE = False
+    print("[WARN] words.py not importable — running without wordf cross-validation")
+
 # Force UTF-8 output on Windows
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -40,33 +63,33 @@ SHEET_ID     = "1EQAhrCWmOzDD6VhVig4f3AffWMVZmrsrZKkgUc6h6WQ"
 INPUT_SHEETS = ["nse", "bse"]
 OUTPUT_WS    = "multi_ai"
 
-# 6-model weights (with Gemini)
+# 6-model weights (with Gemini) — FinBERT DEMOTED
 W_70B     = 0.25
 W_8B      = 0.10
 W_SCOUT   = 0.15
-W_QWEN    = 0.15
-W_FINBERT = 0.15
+W_QWEN    = 0.20
+W_FINBERT = 0.10   # was 0.15 — demoted (unreliable on Indian filings)
 W_GEMINI  = 0.20
 
-# 5-model weights (no Gemini — most common)
+# 5-model weights (no Gemini) — FinBERT DEMOTED
 WF_70B     = 0.30
 WF_8B      = 0.15
 WF_SCOUT   = 0.20
-WF_QWEN    = 0.20
-WF_FINBERT = 0.15
+WF_QWEN    = 0.25   # was 0.20 — boost smartest models
+WF_FINBERT = 0.10   # was 0.15 — demoted
 
-# Thresholds (tuned for 5-model mode)
-STRONG_THRESHOLD = 75
-NORMAL_THRESHOLD = 50
-MIN_MODELS_AGREE = 2
+# Thresholds (RAISED for reliability)
+STRONG_THRESHOLD = 80    # was 75
+NORMAL_THRESHOLD = 65    # was 50
+MIN_MODELS_AGREE = 3     # was 2 — need REAL consensus
 
 # Rate limiting
-REQUEST_DELAY = 2.5  # seconds between announcements
+REQUEST_DELAY = 2.5
 
 # =========================================================
 # GLOBAL STATE
 # =========================================================
-gemini_disabled = False  # auto-set to True on daily quota exhaust
+gemini_disabled = False
 
 # =========================================================
 # GOOGLE SHEETS AUTH
@@ -128,7 +151,7 @@ def with_sheets_backoff(op, max_attempts=6, base_delay=2.0):
             raise
 
 # =========================================================
-# NOISE FILTER
+# NOISE FILTER (EXPANDED — includes wordf v2 keywords)
 # =========================================================
 IGNORE_KEYWORDS = [
     "scrutinizer", "certificate", "postal ballot", "agm",
@@ -141,6 +164,18 @@ IGNORE_KEYWORDS = [
     "loss of share certificate", "duplicate share certificate",
     "monthly reporting", "change in kmp", "public notice",
     "appointment", "cessation",
+    # v4 additions — catch more noise BEFORE wasting API calls
+    "pursuant to regulation", "under regulation",
+    "submission of annual", "submission of quarterly",
+    "annual return", "code of conduct",
+    "composition of board", "composition of committee",
+    "familiarization programme", "policy on related",
+    "corporate governance report", "secretarial compliance",
+    "transfer of shares", "transmission of shares",
+    "reclassification of promoter",
+    "statement of investor complaints",
+    "e-voting", "scrutinizer report",
+    "outcome of board meeting",
 ]
 
 def is_noise(text):
@@ -148,32 +183,64 @@ def is_noise(text):
     return any(kw in t for kw in IGNORE_KEYWORDS)
 
 # =========================================================
-# ANALYSIS PROMPT
+# ANALYSIS PROMPT (v4 — with edge cases)
 # =========================================================
-PROMPT = """You are an elite Indian stock market analyst (NSE/BSE).
-Analyze this corporate announcement - will it MOVE the stock price in 1-2 days?
+PROMPT = """You are an elite Indian stock market analyst specializing in NSE/BSE corporate announcements.
+Analyze this announcement — will it MOVE the stock price in 1-2 trading days?
 
-PRICE-MOVING EVENTS (BUY or SELL):
-- Order wins / large contracts / LOA / work orders worth significant amount
-- Strong earnings surprise / record profit / revenue surge
-- Buyback / bonus / stock split / rights issue
-- Acquisition / merger / strategic partnership with clear financial impact
-- Promoter buying significant stake
-- SEBI action / fraud / auditor resignation / insolvency / NCLT / default
-- Major capacity expansion / new plant
+STRONG BUY SIGNALS (high confidence):
+- Large order win / LOA / work order worth significant amount
+- Record profit / earnings beat / revenue surge / EBITDA growth
+- Buyback / bonus issue / stock split / rights issue
+- NCLT APPROVES resolution plan (turnaround — can cause 100%+ gains)
+- Debt-free announcement / deleveraging complete
+- Acquisition of a COMPANY or BUSINESS (not routine share transfers)
+- Promoter buying significant stake in open market
+- Demerger / spin-off approval (value unlocking)
+- Government / defence contract awarded
 
-IGNORE (return NO TRADE):
+STRONG SELL SIGNALS (high confidence):
+- NCLT ADMITS insolvency petition / CIRP initiated
+- Fraud detected / accounting irregularities / forensic audit
+- SEBI action / ban / penalty against company
+- Auditor resignation / qualified audit opinion
+- Loan default / NPA classification / wilful defaulter
+- Pledge invocation / margin call triggered
+- Production halt / plant shutdown
+
+CRITICAL EDGE CASES — you MUST get these RIGHT:
+- "acquisition of shares under regulation" → NO TRADE (routine compliance)
+- "acquisition of XYZ company/business/subsidiary" → BUY (real deal)
+- "NCLT admits insolvency" / "CIRP" → STRONG SELL
+- "NCLT approves resolution plan" → STRONG BUY
+- "share purchase agreement executed" → BUY (real deal)
+- "transfer of shares under SEBI" → NO TRADE (routine)
+- "rights entitlement" / "rights issue" → moderate BUY
+- "pursuant to regulation 30/31/74" → NO TRADE (compliance)
+- "outcome of board meeting" → NO TRADE (unless contains material event)
+- "appointment/cessation of director" → NO TRADE (routine)
+- "loss of share certificate" → NO TRADE
+- "debt-free" / "zero debt" → BUY
+- "auditor resignation" → SELL
+
+MUST return NO TRADE for:
 - Compliance filings, board meetings, AGM, voting results
-- Appointments, newspaper ads, investor presentations
-- Routine disclosures without financial impact
+- Appointments, cessations, newspaper ads, investor presentations
+- Routine disclosures, share transfers, record dates, ESOP
+- Any filing with "pursuant to regulation" language
+- Annual reports, quarterly results (unless exceptional surprise)
 
-CONFIDENCE: 90-100=very strong, 75-89=strong, 60-74=moderate, <60=NO TRADE
+CONFIDENCE RULES (be STRICT):
+- 90-100: Crystal clear, strong, material event with large financial impact
+- 75-89: Clear event with moderate-to-strong impact
+- 60-74: Probable impact but some ambiguity
+- <60: Unclear → you MUST return NO TRADE
 
 COMPANY: {ticker}
 ANNOUNCEMENT: {text}
 
-Return ONLY valid JSON:
-{{"action": "BUY"|"SELL"|"NO TRADE", "confidence": <0-100>, "reason": "<1 line>"}}"""
+Return ONLY valid JSON (no explanation outside JSON):
+{{"action": "BUY"|"SELL"|"NO TRADE", "confidence": <0-100>, "reason": "<1 line factual>"}}"""
 
 # =========================================================
 # MODEL 1: LLAMA 3.3 70B (PRIMARY — smartest)
@@ -210,7 +277,7 @@ def analyze_groq_8b(ticker, text):
     return {"action": "NO TRADE", "confidence": 0, "reason": "error"}
 
 # =========================================================
-# MODEL 3: LLAMA 4 SCOUT 17B (newest Llama 4 via Groq)
+# MODEL 3: LLAMA 4 SCOUT 17B
 # =========================================================
 def analyze_scout(ticker, text):
     try:
@@ -227,7 +294,7 @@ def analyze_scout(ticker, text):
     return {"action": "NO TRADE", "confidence": 0, "reason": "error"}
 
 # =========================================================
-# MODEL 4: QWEN3 32B (strong reasoning via Groq)
+# MODEL 4: QWEN3 32B (strong reasoning)
 # =========================================================
 def analyze_qwen(ticker, text):
     try:
@@ -244,7 +311,7 @@ def analyze_qwen(ticker, text):
     return {"action": "NO TRADE", "confidence": 0, "reason": "error"}
 
 # =========================================================
-# MODEL 4: GEMINI (optional bonus, auto-disables on quota)
+# MODEL 5: GEMINI (optional, auto-disables on quota)
 # =========================================================
 def analyze_gemini(ticker, text):
     global gemini_disabled
@@ -263,13 +330,13 @@ def analyze_gemini(ticker, text):
         err = str(e).lower()
         if "429" in str(e) or "quota" in err:
             gemini_disabled = True
-            print(f"  [GEMINI] Quota exhausted — continuing with 4 models")
+            print(f"  [GEMINI] Quota exhausted — continuing without Gemini")
         else:
             print(f"  [GEMINI ERR] {str(e)[:80]}")
     return {"action": "NO TRADE", "confidence": 0, "reason": "gemini unavailable"}
 
 # =========================================================
-# MODEL 6: FINBERT (NLP sentiment)
+# MODEL 6: FINBERT (NLP sentiment — DEMOTED to tiebreaker)
 # =========================================================
 def analyze_finbert(text):
     try:
@@ -287,10 +354,50 @@ def analyze_finbert(text):
     return {"action": "NO TRADE", "confidence": 0, "reason": "error"}
 
 # =========================================================
-# CONSENSUS ENGINE — 5 MODEL
+# FINBERT SANITY CHECK
+# If ALL LLMs disagree with FinBERT, override it to NO TRADE
+# =========================================================
+def sanitize_finbert(rfb, r70b, r8b, rscout, rqwen):
+    """Override FinBERT when it contradicts all LLMs."""
+    if rfb["action"] == "NO TRADE":
+        return rfb
+
+    llm_results = [r70b, r8b, rscout, rqwen]
+    llm_actions = [r["action"] for r in llm_results if r["action"] != "NO TRADE"]
+
+    if not llm_actions:
+        return rfb  # All LLMs say NO TRADE — FinBERT might be right
+
+    # If FinBERT says BUY but no LLM says BUY (and some say SELL)
+    if rfb["action"] == "BUY" and "BUY" not in llm_actions and "SELL" in llm_actions:
+        return {"action": "NO TRADE", "confidence": 0, "reason": "FinBERT overridden (all LLMs disagree)"}
+
+    # If FinBERT says SELL but no LLM says SELL (and some say BUY)
+    if rfb["action"] == "SELL" and "SELL" not in llm_actions and "BUY" in llm_actions:
+        return {"action": "NO TRADE", "confidence": 0, "reason": "FinBERT overridden (all LLMs disagree)"}
+
+    return rfb
+
+# =========================================================
+# CONSENSUS ENGINE v4 — with smart conflict suppression
 # =========================================================
 def compute_consensus(r70b, r8b, rscout, rqwen, rgemini, rfb):
     global gemini_disabled
+
+    # ── SMART MODEL CONFLICT CHECK ──
+    # If 70B and Qwen disagree on direction → unreliable → NO TRADE
+    if (r70b["action"] != "NO TRADE" and rqwen["action"] != "NO TRADE"
+            and r70b["action"] != rqwen["action"]):
+        parts = []
+        for name, result in {"70B": r70b, "8B": r8b, "SCT": rscout, "QWN": rqwen}.items():
+            tag = {"BUY": "+", "SELL": "-", "NO TRADE": "~"}[result["action"]]
+            parts.append(f"{name}={tag}{result['confidence']}")
+        return {
+            "action": "NO TRADE", "score": 0,
+            "reasoning": f"[{' | '.join(parts)}] SUPPRESSED: 70B ({r70b['action']}) vs Qwen ({rqwen['action']}) disagree",
+            "buy_votes": 0, "sell_votes": 0, "conflict": True,
+            "r70b": r70b, "r8b": r8b, "rscout": rscout, "rqwen": rqwen, "rgemini": rgemini, "rfb": rfb,
+        }
 
     all_models = {"70B": r70b, "8B": r8b, "SCT": rscout, "QWN": rqwen, "GEM": rgemini, "FB": rfb}
 
@@ -312,17 +419,18 @@ def compute_consensus(r70b, r8b, rscout, rqwen, rgemini, rfb):
         elif result["action"] == "SELL":
             sell_score += result["confidence"] * w
 
-    # Majority bonus
+    # Majority bonus (only for strong consensus)
     majority = len(active)
     if buy_votes >= majority:  buy_score += 15
     if sell_votes >= majority: sell_score += 15
     if buy_votes >= majority - 1 and buy_votes >= 3: buy_score += 8
     if sell_votes >= majority - 1 and sell_votes >= 3: sell_score += 8
 
+    # Conflict penalty — STRONGER than v3
     conflict = buy_votes >= 1 and sell_votes >= 1
     if conflict:
-        buy_score  *= 0.6
-        sell_score *= 0.6
+        buy_score  *= 0.5   # was 0.6 — harsher penalty
+        sell_score *= 0.5
 
     buy_score  = min(100, int(buy_score))
     sell_score = min(100, int(sell_score))
@@ -355,10 +463,10 @@ def compute_consensus(r70b, r8b, rscout, rqwen, rgemini, rfb):
 # =========================================================
 # LOAD DATA
 # =========================================================
-print("=" * 60)
-print("  MULTI-AI STOCK SIGNAL ENGINE v3 -- 6 MODEL")
-print("  70B + 8B + Llama4Scout + Qwen3-32B + Gemini + FinBERT")
-print("=" * 60)
+print("=" * 70)
+print("  MULTI-AI STOCK SIGNAL ENGINE v4 -- ULTRA-RELIABLE")
+print("  70B + 8B + Scout + Qwen3 + Gemini + FinBERT + wordf Cross-Val")
+print("=" * 70)
 
 all_rows = []
 for sheet_name in INPUT_SHEETS:
@@ -392,49 +500,138 @@ for r in all_rows:
         unique.append(r)
 
 filtered = [r for r in unique if not is_noise(r["text"])]
+
+# ── v4: Pre-filter with wordf compliance/quality checks ──
+if WORDF_AVAILABLE:
+    pre_filtered = []
+    skipped_quality = 0
+    skipped_compliance = 0
+    for r in filtered:
+        quality = text_quality_score(r["text"])
+        if quality == 0:
+            skipped_quality += 1
+            continue
+        if is_compliance_filing(r["text"]):
+            skipped_compliance += 1
+            continue
+        pre_filtered.append(r)
+    print(f"  Pre-filtered: {skipped_quality} quality | {skipped_compliance} compliance")
+    filtered = pre_filtered
+
 print(f"\n  Total: {len(all_rows)} | Unique: {len(unique)} | Filtered: {len(filtered)}")
-print("-" * 60)
+
+# ── Load historical signal data for price validation ──
+ws_history_data = []
+try:
+    ws_hist = ss.worksheet("wordf")
+    ws_history_data = ws_hist.get_all_values()[1:]
+    print(f"  Historical: {len(ws_history_data)} past wordf signals loaded")
+except Exception:
+    print("  Historical: no wordf data found")
+
+print("-" * 70)
 
 # =========================================================
-# ANALYSIS LOOP
+# ANALYSIS LOOP (v4 — with cross-validation)
 # =========================================================
 results = []
 skipped = 0
+suppressed_direction = 0
+wordf_boosted = 0
+hist_applied = 0
 
 for i, r in enumerate(filtered):
     ticker, text, source = r["ticker"], r["text"], r["source"]
     print(f"\n[{i+1}/{len(filtered)}] {ticker} ({source})")
 
+    # ── AI ANALYSIS (6 models) ──
     r70b    = analyze_groq_70b(ticker, text)
     r8b     = analyze_groq_8b(ticker, text)
     rscout  = analyze_scout(ticker, text)
     rqwen   = analyze_qwen(ticker, text)
     rgemini = analyze_gemini(ticker, text)
-    rfb     = analyze_finbert(text)
+    rfb_raw = analyze_finbert(text)
+
+    # ── FINBERT SANITY CHECK ──
+    rfb = sanitize_finbert(rfb_raw, r70b, r8b, rscout, rqwen)
+    if rfb["action"] != rfb_raw["action"]:
+        print(f"  [FB OVERRIDE] {rfb_raw['action']} -> NO TRADE (disagrees with all LLMs)")
 
     mode = "5-MODEL" if gemini_disabled else "6-MODEL"
     print(f"  70B={r70b['action'][:1]}{r70b['confidence']} | 8B={r8b['action'][:1]}{r8b['confidence']} | SCT={rscout['action'][:1]}{rscout['confidence']} | QWN={rqwen['action'][:1]}{rqwen['confidence']} | GEM={rgemini['action'][:1]}{rgemini['confidence']} | FB={rfb['action'][:1]}{rfb['confidence']} [{mode}]")
 
+    # ── CONSENSUS ──
     consensus = compute_consensus(r70b, r8b, rscout, rqwen, rgemini, rfb)
 
     if consensus["action"] == "NO TRADE":
         skipped += 1
-    else:
-        tag = {"STRONG BUY": "++", "BUY": "+", "STRONG SELL": "--", "SELL": "-"}.get(consensus["action"], "")
-        print(f"  >>> {tag} {consensus['action']} | Score: {consensus['score']}")
-        results.append({
-            "ticker": ticker, "source": source,
-            "action": consensus["action"], "score": consensus["score"],
-            "r70b_action": r70b["action"], "r70b_conf": r70b["confidence"],
-            "r8b_action": r8b["action"], "r8b_conf": r8b["confidence"],
-            "rscout_action": rscout["action"], "rscout_conf": rscout["confidence"],
-            "rqwen_action": rqwen["action"], "rqwen_conf": rqwen["confidence"],
-            "rgemini_action": rgemini["action"], "rgemini_conf": rgemini["confidence"],
-            "rfb_action": rfb["action"], "rfb_conf": rfb["confidence"],
-            "reasoning": consensus["reasoning"],
-            "buy_votes": consensus["buy_votes"], "sell_votes": consensus["sell_votes"],
-            "conflict": consensus["conflict"],
-        })
+        if consensus.get("conflict"):
+            print(f"  >>> SUPPRESSED: smart model conflict")
+        continue
+
+    # ── WORDF CROSS-VALIDATION (THE BIG FIX for wrong direction) ──
+    if WORDF_AVAILABLE:
+        wordf_buy, wordf_sell, wordf_reasons = wordf_event_score(text)
+
+        # DIRECTION CONFLICT: AI says BUY but wordf detects SELL keywords
+        if "BUY" in consensus["action"] and wordf_sell <= -6:
+            print(f"  >>> DIRECTION FIX: AI={consensus['action']} but wordf found SELL keywords: {[r for r in wordf_reasons if 'SELL' in r][:3]}")
+            suppressed_direction += 1
+            skipped += 1
+            continue
+
+        # DIRECTION CONFLICT: AI says SELL but wordf detects strong BUY keywords
+        if "SELL" in consensus["action"] and wordf_buy >= 6:
+            print(f"  >>> DIRECTION FIX: AI={consensus['action']} but wordf found BUY keywords: {[r for r in wordf_reasons if 'BUY' in r][:3]}")
+            suppressed_direction += 1
+            skipped += 1
+            continue
+
+        # CONFIDENCE BOOST: AI + wordf AGREE on direction
+        if "BUY" in consensus["action"] and wordf_buy >= 6:
+            consensus["score"] = min(100, consensus["score"] + 10)
+            consensus["reasoning"] += " [wordf CONFIRMS BUY]"
+            wordf_boosted += 1
+        elif "SELL" in consensus["action"] and wordf_sell <= -6:
+            consensus["score"] = min(100, consensus["score"] + 10)
+            consensus["reasoning"] += " [wordf CONFIRMS SELL]"
+            wordf_boosted += 1
+
+        # ── HISTORICAL PRICE VALIDATION ──
+        if wordf_reasons:
+            hist_boost, hist_analysis = analyze_historical_patterns(ticker, wordf_reasons, ws_history_data)
+            if hist_boost != 0:
+                consensus["score"] = max(0, min(100, consensus["score"] + hist_boost))
+                consensus["reasoning"] += f" [{hist_analysis}]"
+                hist_applied += 1
+
+    # ── RE-CHECK THRESHOLD after adjustments ──
+    if consensus["score"] < NORMAL_THRESHOLD:
+        skipped += 1
+        continue
+
+    # Re-classify after score adjustments
+    if "BUY" in consensus["action"]:
+        consensus["action"] = "STRONG BUY" if consensus["score"] >= STRONG_THRESHOLD else "BUY"
+    elif "SELL" in consensus["action"]:
+        consensus["action"] = "STRONG SELL" if consensus["score"] >= STRONG_THRESHOLD else "SELL"
+
+    tag = {"STRONG BUY": "++", "BUY": "+", "STRONG SELL": "--", "SELL": "-"}.get(consensus["action"], "")
+    print(f"  >>> {tag} {consensus['action']} | Score: {consensus['score']}")
+
+    results.append({
+        "ticker": ticker, "source": source,
+        "action": consensus["action"], "score": consensus["score"],
+        "r70b_action": r70b["action"], "r70b_conf": r70b["confidence"],
+        "r8b_action": r8b["action"], "r8b_conf": r8b["confidence"],
+        "rscout_action": rscout["action"], "rscout_conf": rscout["confidence"],
+        "rqwen_action": rqwen["action"], "rqwen_conf": rqwen["confidence"],
+        "rgemini_action": rgemini["action"], "rgemini_conf": rgemini["confidence"],
+        "rfb_action": rfb["action"], "rfb_conf": rfb["confidence"],
+        "reasoning": consensus["reasoning"],
+        "buy_votes": consensus["buy_votes"], "sell_votes": consensus["sell_votes"],
+        "conflict": consensus["conflict"],
+    })
 
     time.sleep(REQUEST_DELAY)
 
@@ -444,11 +641,12 @@ for i, r in enumerate(filtered):
 results.sort(key=lambda x: x["score"], reverse=True)
 
 print("\n" + "=" * 90)
-print("  FINAL SIGNALS")
+print("  FINAL SIGNALS (v4 — Ultra-Reliable)")
 print("=" * 90)
 
 if not results:
-    print("  No actionable signals today.")
+    print("  No actionable signals — this is EXPECTED with strict v4 filtering.")
+    print(f"  {len(filtered)} analyzed | {skipped} filtered | {suppressed_direction} direction-fixed")
 else:
     print(f"  {'STOCK':<18} {'ACTION':<13} {'SCORE':>5}  {'70B':>5} {'8B':>5} {'SCT':>5} {'QWN':>5} {'GEM':>5} {'FB':>5}")
     print(f"  {'-'*85}")
@@ -464,6 +662,12 @@ else:
     buys  = sum(1 for r in results if "BUY" in r["action"])
     sells = sum(1 for r in results if "SELL" in r["action"])
     print(f"\n  BUY: {buys} | SELL: {sells} | Skipped: {skipped}")
+    if suppressed_direction:
+        print(f"  Direction-fixed: {suppressed_direction} (wordf caught wrong BUY/SELL)")
+    if wordf_boosted:
+        print(f"  wordf-confirmed: {wordf_boosted}")
+    if hist_applied:
+        print(f"  Historical validation: {hist_applied}")
 
 print("=" * 90)
 
@@ -571,12 +775,12 @@ sells  = sum(1 for r in results if "SELL" in r["action"])
 s_buys = sum(1 for r in results if r["action"] == "STRONG BUY")
 s_sells= sum(1 for r in results if r["action"] == "STRONG SELL")
 avg_sc = int(sum(r["score"] for r in results) / len(results)) if results else 0
-top_pk = results[0]["ticker"] if results else "—"
+top_pk = results[0]["ticker"] if results else "---"
 total_hist = len(old_signals) + len([r for r in results if "BUY" in r["action"] or "SELL" in r["action"]])
 
-if buys > sells:     sentiment, s_col = "BULLISH ▲", C_GREEN
-elif sells > buys:   sentiment, s_col = "BEARISH ▼", C_RED
-else:                sentiment, s_col = "NEUTRAL ●", C_AMBER
+if buys > sells:     sentiment, s_col = "BULLISH", C_GREEN
+elif sells > buys:   sentiment, s_col = "BEARISH", C_RED
+else:                sentiment, s_col = "NEUTRAL", C_AMBER
 
 mode_str = "5-MODEL" if gemini_disabled else "6-MODEL"
 
@@ -626,9 +830,9 @@ batch_requests.append({"updateSheetProperties": {
 
 with_sheets_backoff(lambda: ss.batch_update({"requests": batch_requests}))
 
-run_info = f"{ist_date}  ·  {ist_time} IST  ·  {mode_str}  ·  Scanned: {len(filtered)}  ·  Skipped: {skipped}"
+run_info = f"{ist_date}  |  {ist_time} IST  |  v4 {mode_str}  |  Scanned: {len(filtered)}  |  Skipped: {skipped}  |  Dir-Fixed: {suppressed_direction}"
 dashboard_updates = [
-    {"range": "A1", "values": [["  MULTI-AI SIGNAL ENGINE"]]},
+    {"range": "A1", "values": [["  MULTI-AI v4 ULTRA-RELIABLE"]]},
     {"range": "A2", "values": [[run_info]]},
     {"range": "A3", "values": [[""]]},
     {"range": "A4:G4", "values": [["  BUY SIGNALS", str(buys), "", "  SELL SIGNALS", str(sells), "", f"  {sentiment}"]]},
@@ -643,8 +847,8 @@ if all_signals:
     dashboard_updates.append({"range": "A10", "values": all_signals})
 else:
     dashboard_updates.append({"range": "A10:G10", "values": [[
-        ist_date, ist_time, "—", "—", "NO SIGNALS", "0",
-        f"{len(filtered)} analyzed — no actionable triggers found"
+        ist_date, ist_time, "---", "---", "NO SIGNALS", "0",
+        f"{len(filtered)} analyzed with v4 strict filtering"
     ]]})
 
 with_sheets_backoff(lambda: out.batch_update(dashboard_updates))
@@ -715,15 +919,21 @@ else:
 
 flush_formats(out)
 
-# ── Console ──
-print(f"\n{'='*60}")
+# ── Console summary ──
+print(f"\n{'='*70}")
 if results:
-    print(f"  ✅ {len(results)} signals added to '{OUTPUT_WS}'")
-    print(f"  📊 {buys} BUY | {sells} SELL | {skipped} skipped")
+    print(f"  SIGNALS: {len(results)} added to '{OUTPUT_WS}'")
+    print(f"  BUY: {buys} | SELL: {sells} | Skipped: {skipped}")
 else:
-    print(f"  ℹ️  No actionable signals this run")
-    print(f"  📊 {len(filtered)} analyzed | {skipped} skipped")
-print(f"  📜 {len(all_signals)} total signals in history")
-print(f"  🕐 {ist_full}")
-print(f"{'='*60}")
+    print(f"  No actionable signals (v4 strict filtering)")
+    print(f"  {len(filtered)} analyzed | {skipped} skipped")
+if suppressed_direction:
+    print(f"  DIRECTION FIXES: {suppressed_direction} (wordf caught wrong BUY/SELL)")
+if wordf_boosted:
+    print(f"  WORDF CONFIRMED: {wordf_boosted} signals")
+if hist_applied:
+    print(f"  HISTORICAL VALIDATION: {hist_applied} signals")
+print(f"  HISTORY: {len(all_signals)} total signals")
+print(f"  TIME: {ist_full}")
+print(f"{'='*70}")
 print("DONE")

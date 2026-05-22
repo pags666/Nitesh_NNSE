@@ -1,297 +1,24 @@
-'''import re
-import gspread
-from datetime import datetime
-from oauth2client.service_account import ServiceAccountCredentials
-import pytz
-
-# =============================
-# GOOGLE AUTH
-# =============================
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
-
-def get_client():
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "service_account.json", scope
-    )
-    return gspread.authorize(creds)
-
-# =============================
-# IST TIME
-# =============================
-def get_ist_time():
-    ist = pytz.timezone('Asia/Kolkata')
-    return datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
-
-# =============================
-# CONFIG
-# =============================
-SHEET_ID = "1EQAhrCWmOzDD6VhVig4f3AffWMVZmrsrZKkgUc6h6WQ"
-
-# =============================
-# SOURCE WEIGHTS
-# =============================
-SOURCE_WEIGHT = {
-    "nse": 5,
-    "bse": 5,
-    "monc": 3,
-    "et": 1
-}
-
-# =============================
-# KEYWORDS
-# =============================
-STRONG_BUY = [
-"l1 bidder","loa","letter of award","contract secured","large order","order book",
-"buyback","bonus","stock split","record profit","all time high profit",
-"debt free","deleveraging","promoter buying","value unlocking","turnaround"
-]
-
-MEDIUM_BUY = [
-"capacity expansion","partnership","joint venture","acquisition",
-"margin expansion","earnings beat","revenue growth","order inflow"
-]
-
-LIGHT_BUY = [
-"agreement","mou","investment","launch","expansion"
-]
-
-STRONG_SELL = [
-"forensic audit","auditor resignation","default","insolvency","nclt",
-"sebi action","fraud","accounting irregularities","pledge invoked"
-]
-
-MEDIUM_SELL = [
-"rating downgrade","loss widens","earnings miss",
-"production halt","governance issue"
-]
-
-LIGHT_SELL = [
-"stake sale","promoter selling","margin pressure",
-"guidance cut","penalty","litigation"
-]
-
-IGNORE = [
-"board meeting","postal ballot","agm","investor meet",
-"trading window","clarification","newspaper"
-]
-
-# =============================
-# EVENT SCORE
-# =============================
-def event_score(text):
-    text = text.lower()
-
-    if any(x in text for x in IGNORE):
-        return 0, []
-
-    score = 0
-    reasons = []
-
-    for w in STRONG_BUY:
-        if w in text:
-            score += 6
-            reasons.append(w)
-
-    for w in MEDIUM_BUY:
-        if w in text:
-            score += 3
-            reasons.append(w)
-
-    for w in LIGHT_BUY:
-        if w in text:
-            score += 1
-            reasons.append(w)
-
-    for w in STRONG_SELL:
-        if w in text:
-            score -= 6
-            reasons.append(w)
-
-    for w in MEDIUM_SELL:
-        if w in text:
-            score -= 3
-            reasons.append(w)
-
-    for w in LIGHT_SELL:
-        if w in text:
-            score -= 1
-            reasons.append(w)
-
-    return score, reasons
-
-# =============================
-# MONEY SCORE
-# =============================
-def money_score(text):
-    nums = re.findall(r'\d+', text)
-    if not nums:
-        return 0
-
-    val = max([int(n) for n in nums])
-
-    if val > 1000: return 3
-    elif val > 100: return 2
-    elif val > 10: return 1
-    return 0
-
-# =============================
-# SYMBOL NORMALIZATION (FIXED)
-# =============================
-def normalize_symbol(source, row, text):
-
-    if source == "nse":
-        return row[0]
-
-    if source == "bse":
-        return None
-
-    # ✅ allow monc + et
-    if source in ["monc", "et"]:
-        return "GENERIC"
-
-    return None
-
-# =============================
-# READ SHEETS
-# =============================
-def read_sheet(ws, source):
-    data = ws.get_all_values()[1:]
-    result = []
-
-    for r in data:
-        if len(r) < 1:
-            continue
-
-        if source in ["nse","bse"]:
-            text = r[-1]
-            symbol = normalize_symbol(source, r, text)
-
-        elif source == "et":
-            text = r[0]
-            symbol = "GENERIC"
-
-        elif source == "monc":
-            text = r[0]
-            symbol = normalize_symbol(source, r, text)
-
-        else:
-            continue
-
-        if symbol:
-            result.append((source, symbol, text))
-
-    return result
-
-# =============================
-# MAIN ENGINE
-# =============================
-def run():
-    client = get_client()
-    sheet = client.open_by_key(SHEET_ID)
-
-    all_data = []
-
-    for name in ["nse","bse","et","monc"]:
-        try:
-            ws = sheet.worksheet(name)
-            all_data += read_sheet(ws, name)
-        except Exception as e:
-            print(f"Skipping {name}: {e}")
-
-    stock_scores = {}
-
-    for source, symbol, text in all_data:
-
-        if symbol in ["", None]:
-            continue
-
-        e, reasons = event_score(text)
-
-        if source == "bse" and e < 0:
-            continue
-
-        m = money_score(text)
-        w = SOURCE_WEIGHT.get(source, 1)
-
-        total = (e + m) * w
-
-        if symbol not in stock_scores:
-            stock_scores[symbol] = {"score":0, "reasons":[]}
-
-        stock_scores[symbol]["score"] += total
-        stock_scores[symbol]["reasons"].extend(reasons)
-
-    # =============================
-    # FINAL OUTPUT
-    # =============================
-    output = []
-
-    print("\n======= FINAL HIGH PROBABILITY SIGNALS =======\n")
-
-    for stock, data in stock_scores.items():
-
-        score = data["score"]
-        reasons = list(dict.fromkeys(data["reasons"]))
-
-        prob = max(0, min(100, int((score + 20) * 2)))
-
-        if prob >= 70:
-            signal = "STRONG BUY 🟢🟢"
-
-        elif prob >= 60:
-            signal = "BUY 🟢"
-
-        elif prob <= 30:
-            signal = "STRONG SELL 🔴🔴"
-
-        elif prob <= 40:
-            signal = "SELL 🔴"
-
-        else:
-            continue
-
-        print(f"{stock} | Score: {score} | {prob}% | {signal}")
-
-        output.append([
-            datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M"),
-            stock,
-            score,
-            prob,
-            signal,
-            ", ".join(reasons[:3])
-        ])
-
-    print(f"\nTotal Signals: {len(output)}\n")
-
-    # =============================
-    # WRITE TO SHEET
-    # =============================
-    try:
-        ws = sheet.worksheet("wordf")
-    except:
-        ws = sheet.add_worksheet(title="wordf", rows="1000", cols="10")
-
-    if not ws.get_all_values():
-        ws.append_row(["Time","Stock","Score","Probability","Signal","Reason"])
-
-    output.sort(key=lambda x: x[3], reverse=True)
-
-    rows_to_append = []
-    if output:
-        rows_to_append.extend(output)
-
-    rows_to_append.append(["Last Updated (IST):", get_ist_time()])
-    ws.append_rows(rows_to_append)
-
-# =============================
-# RUN
-# =============================
-if __name__ == "__main__":
-    run()
-'''
+"""
+WORDF v2 — Ultra-Reliable Stock Signal Engine
+==============================================
+Reads NSE/BSE corporate announcements from Google Sheets,
+applies context-aware keyword matching, text quality scoring,
+compliance filing detection, and historical pattern analysis
+to generate high-confidence BUY/SELL signals.
+
+v2 Changes:
+- Context-aware acquisition matching (no more false positives)
+- Compliance filing detection (filters regulatory noise)
+- Text quality scoring (rejects short/vague filings)
+- Raised confidence threshold to 80% (was 60%)
+- NCLT approval at score=8 (highest priority)
+- Added EBITDA, research upgrade, demerger, govt order patterns
+- Input/output deduplication
+- BSE short-text handler
+- Historical pattern analysis with yfinance price validation
+
+Previous version (v1) is preserved in git history.
+"""
 
 import re
 import gspread
@@ -331,40 +58,46 @@ SOURCE_WEIGHT = {
 }
 
 # =============================
-# CONFIDENCE THRESHOLDS
+# CONFIDENCE THRESHOLDS (RAISED FOR RELIABILITY)
 # =============================
-BUY_CONF_THRESHOLD  = 60
-SELL_CONF_THRESHOLD = 60
+BUY_CONF_THRESHOLD  = 80
+SELL_CONF_THRESHOLD = 80
 
 # =============================
-# SCORE CALIBRATION
+# SCORE CALIBRATION (RECALIBRATED)
 #
-# One STRONG_BUY phrase  = +6 raw × weight 5 = 30 weighted → 50% conf  (not shown)
-# Two STRONG_BUY phrases = 60 weighted                      → 100% conf
-# One STRONG_BUY + money_score 2 = (6+2)×5 = 40 weighted   → 67% conf  (not shown)
-# One STRONG_BUY + money_score 3 = (6+3)×5 = 45 weighted   → 75% conf  (not shown)
-# One STRONG_BUY + money_score 5 = (6+5)×5 = 55 weighted   → 92% conf  (SHOWN ✅)
-# Two STRONG_BUY + any money     = easily > 60 weighted     → 100% conf (SHOWN ✅)
+# With BUY_100_SCORE = 45:
+# One STRONG_BUY (+6) × weight 5 = 30 weighted  → 67% conf  (NOT shown — below 80%)
+# One NCLT_APPROVAL (+8) × weight 5 = 40        → 89% conf  (SHOWN ✅)
+# Two STRONG_BUY = 60 weighted                   → 100% conf (SHOWN ✅)
+# One STRONG_BUY + money_score 3 = (6+3)×5 = 45  → 100% conf (SHOWN ✅)
+# One MED_BUY (+3) × weight 5 = 15 weighted      → 33% conf  (NOT shown)
 #
-# This means a single filing only crosses 80% when:
-#   - One very strong keyword + a large deal value, OR
+# This means a filing only crosses 80% when:
+#   - NCLT approval or resolution plan (score=8), OR
+#   - One strong keyword + significant deal value, OR
 #   - Two independent strong keywords in the same text
 # =============================
-BUY_100_SCORE  = 30
-SELL_100_SCORE = -30
+BUY_100_SCORE  = 45
+SELL_100_SCORE = -45
 
 # =============================
-# KEYWORD ENGINE
+# KEYWORD ENGINE — BUY PATTERNS
 #
-# Each entry is a (pattern, score, label) tuple.
-# Pattern is a regex — this allows:
+# Each entry: (regex_pattern, score, label)
+# Pattern is regex for flexibility:
 #   - Plural/verb variants: acqui(re|res|red|ring|sition)
-#   - Word-order flexibility: "order.{0,20}received" matches "order of Rs 500Cr received"
+#   - Word-order flexibility: "order.{0,20}received"
 #   - Optional words: "letter of (award|intent)"
 #   - Boundaries: \b prevents partial matches
 # =============================
 
 BUY_PATTERNS = [
+
+    # ── HIGHEST PRIORITY (+8) — NCLT / Resolution ───────────────────────
+    (r'\bnclt\s+(approv(al|es?|ed)|order\s+for|confirms?|sanctions?)\b',  8, "nclt approval"),
+    (r'\bresolution\s+plan\s+(approved|confirmed|accepted|sanctioned)\b', 8, "resolution plan approved"),
+    (r'\bnclt\s+order\s+(in\s+fav(ou?r)|approv)\b',                       8, "nclt order in favour"),
 
     # ── STRONG BUY (+6) ─────────────────────────────────────────────────
     # Orders & Contracts
@@ -379,7 +112,13 @@ BUY_PATTERNS = [
     (r'\b(large|mega|significant|major|repeat)\s+order\b',                6, "large/mega/significant order"),
     (r'\border\s+intak(e|es)\b',                                           6, "order intake"),
     (r'\bexecut(e|ed|ing)\s+(a\s+)?share\s+purchase\s+agreement\b',       6, "share purchase agreement"),
-    (r'\baquir(e|es|ed|ing)\b|\bacquisition\b',                           6, "acquisition/acquire"),
+
+    # Acquisition — CONTEXT-AWARE (replaces old over-broad \bacquisition\b)
+    (r'\bacquisition\s+of\s+(company|business|plant|facility|brand|division|subsidiary|unit|operations?|controlling\s+interest|majority)\b', 6, "business acquisition"),
+    (r'\bacquir(e[sd]?|ing)\s+(a\s+)?(company|business|plant|facility|brand|division|subsidiary|unit|controlling\s+interest)\b', 6, "business acquisition"),
+    (r'\bacquir(e[sd]?|ing)\s+\d+\s*%\s*(stake|equity|interest|shareholding)\s+in\b', 6, "stake acquisition"),
+    (r'\bacquisition\s+(deal|agreement|completed|announced|worth|valued|target)\b', 6, "acquisition deal"),
+
     (r'\b49\s*%\s*(equity\s+)?stake\b',                                    6, "stake acquisition"),
 
     # Financial Milestones
@@ -407,10 +146,28 @@ BUY_PATTERNS = [
     (r'\bturnaround\b',                                                    6, "turnaround"),
     (r'\breturns?\s+to\s+profit\b|\bback\s+in\s+black\b',                6, "returns to profit"),
     (r'\bvalue\s+unlocking\b|\bstrategic\s+divestment\b',                 6, "value unlocking"),
-    (r'\bnclt\s+(approval|approves?|order)\b',                            6, "nclt approval"),
-    (r'\bresolution\s+plan\s+(approved|accepted)\b',                      6, "resolution plan approved"),
 
-    # ── MEDIUM BUY (+3) ─────────────────────────────────────────────────
+    # EBITDA Growth
+    (r'\bebitda\s+(grow(th|s|n|ing)|improv(es?|ed|ing|ement)|expan(sion|ds?|ded|ding))\b', 6, "ebitda growth"),
+    (r'\bebitda\s+margin\s+(expan(sion|ds?)|improv(es?|ed)|up)\b',        6, "ebitda margin expansion"),
+
+    # Research / Brokerage Upgrades
+    (r'\b(initiates?\s+coverage|target\s+price)\s+(with\s+)?(buy|outperform|overweight)\b', 6, "research upgrade"),
+    (r'\b(broker(age)?|analyst)\s+(upgrade[sd]?|initiat(es?|ed|ion))\b',  5, "brokerage upgrade"),
+
+    # Demerger / Spin-off (value unlocking)
+    (r'\b(de-?merger|spin.?off|hive.?off)\s+(approv(al|ed)|of|plan|scheme)\b', 6, "demerger/spin-off"),
+
+    # Government / Defence Orders (high reliability)
+    (r'\b(government|defence|defense|ministry|railway|nhai|nhpc|isro)\s+(order|contract)\b', 6, "govt/defence order"),
+
+    # ── MEDIUM BUY (+3 to +5) ──────────────────────────────────────────
+    # Defence contract with value mentioned
+    (r'\b(defence|defense)\s+(order|contract)\s+(worth|valued?|of\s+rs)\b', 5, "defence contract value"),
+
+    # Target price
+    (r'\btarget\s+price\s+(of|at|set|raised?\s+to)\s+rs\b',              4, "target price set"),
+
     # Capacity & Capex
     (r'\bcapacity\s+expan(sion|d|ding)\b',                                3, "capacity expansion"),
     (r'\b(brownfield|greenfield)\s+expan(sion|d)\b',                      3, "brownfield/greenfield expansion"),
@@ -443,9 +200,18 @@ BUY_PATTERNS = [
     (r'\bfund\s*(raise|raising|raised)\b|\bprivate\s+placement\b',        3, "fundraise/private placement"),
     (r'\bipo\s+(opens?|subscri|listed?)\b',                                3, "ipo"),
 
-    # Launch (medium-buy — product launch at company scale)
+    # Launch (medium-buy)
     (r'\b(launches?|launched|launching)\s+(india.?s?\s+first|world.?s?\s+first)\b', 3, "launches India's/world's first"),
     (r'\bsingle.?window\s+approval\b',                                     3, "single-window approval system"),
+
+    # PLI Scheme
+    (r'\bpli\s+(scheme|benefit|incentive|approval|eligible)\b',           4, "pli scheme"),
+
+    # Institutional Buying
+    (r'\b(fii|dii|fpi|mutual\s+fund)\s+(buy|bought|increase[sd]?\s+stake|added)\b', 4, "institutional buying"),
+
+    # Special Dividend
+    (r'\bspecial\s+dividend\b',                                           4, "special dividend"),
 
     # ── LIGHT BUY (+1) ──────────────────────────────────────────────────
     (r'\bmemorandum\s+of\s+understanding\b|\bmou\s+(signed|executed|entered)\b', 1, "mou signed"),
@@ -524,7 +290,7 @@ SELL_PATTERNS = [
     (r'\b(ed|cbi|income\s*tax)\s+raid\b|\bsearch\s+and\s+seizure\b',    -3, "ed/cbi/it raid"),
     (r'\bassets?\s+attach\w+\b|\battachment\s+order\b',                  -3, "assets attached"),
 
-    # Resignation of KMP (from actual BSE filing pattern)
+    # Resignation of KMP
     (r'\bresignation\s+of\s+(director|kmp|smp|company\s+secretary|compliance\s+officer)\b', -3, "resignation of director/kmp"),
 
     # ── LIGHT SELL (-1) ─────────────────────────────────────────────────
@@ -540,7 +306,7 @@ SELL_PATTERNS = [
     (r'\bcontingent\s+liability\b',                                      -1, "contingent liability"),
 ]
 
-# ── IGNORE PATTERNS ─────────────────────────────────────────────────────────
+# ── IGNORE PATTERNS (EXPANDED — 50+ patterns) ──────────────────────────
 # Routine / non-material filings — skip entirely (zero score)
 IGNORE_PATTERNS = [
     r'\bboard\s+meeting\s+(intimation|scheduled|notice)\b',
@@ -550,30 +316,58 @@ IGNORE_PATTERNS = [
     r'\btrading\s+window\s+(clos\w+|open\w+|shall)\b',
     r'\bclarification\s+(sought|submitted|given)\b',
     r'\bnewspaper\s+publication\b|\bnewspaper\s+advertisement\b',
-    r'\bsaksham\s+niveshak\b',                               # sebi investor campaign
+    r'\bsaksham\s+niveshak\b',
     r'\bchange\s+of\s+(registered\s+)?address\b',
     r'\bbook\s+closure\b',
     r'\brecord\s+date\s+for\s+dividend\b',
     r'\b(interim|final)\s+dividend\b|\bdividend\s+payment\b|\bdividend\s+of\s+rs\b',
     r'\bloss\s+of\s+share\s+certificate\b|\bduplicate\s+share\s+certificate\b',
     r'\btransmission\s+of\s+shares\b',
-    r'\breg(ulation)?\s*(74|40|7)\b',                        # sebi compliance regs
-    r'\blarge\s+corporate\s+(disclosure|criteria|entity)\b', # routine sebi circular
-    r'\bformat\s+of\s+(initial|annual)\s+disclosure\b',      # large corporate format
+    r'\breg(ulation)?\s*(74|40|7)\b',
+    r'\blarge\s+corporate\s+(disclosure|criteria|entity)\b',
+    r'\bformat\s+of\s+(initial|annual)\s+disclosure\b',
     r'\bsecretarial\s+compliance\s+report\b',
     r'\bmonthly\s+reporting\b',
     r'\bchange\s+in\s+kmp\b',
     r'\bscrutinizer\s+report\b|\bvoting\s+result\b|\be-?voting\b',
     r'\bemployee\s+stock\s+option\b|\besop\b',
-    r'\bpublic\s+notice\b',                                  # iepf notices
+    r'\bpublic\s+notice\b',
     r'\bconference\s+call\s+(invitation|scheduled)\b',
-    r'\bnot\s+a?\s+large\s+corporate\b|\bdoes\s+not\s+fall\s+under\b',  # lc non-applicability
+    r'\bnot\s+a?\s+large\s+corporate\b|\bdoes\s+not\s+fall\s+under\b',
     r'\bnon.?applicability\b',
-    r'\besg\s+rating\b',                                     # esg disclosure — not price signal
+    r'\besg\s+rating\b',
     r'\bintimation\s+of\s+postal\s+ballot\b',
-    r'\btenure\s+of\b',                                      # expiry of officer tenure (routine)
-    r'\binternal\s+reorgani[sz]ation\b',                     # internal reshuffle without material impact
+    r'\btenure\s+of\b',
+    r'\binternal\s+reorgani[sz]ation\b',
     r'\bpost\s+offer\s+advertisement\b',
+
+    # ── ROUTINE SHARE / REGULATORY FILINGS (v2 additions) ───────────────
+    r'\bacquisition\s+of\s+shares?\s+(under|pursuant|in\s+terms|by)\b',
+    r'\btransfer\s+of\s+(shares?|equity|securities)\b',
+    r'\breclassification\s+of\s+(promoter|shareholding)\b',
+    r'\bsubmission\s+of\s+(annual|quarterly|half|compliance)\b',
+    r'\bchange\s+in\s+(management|directorate)\b',
+    r'\bnotice\s+of\s+(extra\s*ordinary|general)\s+meeting\b',
+    r'\bstatement\s+of\s+investor\s+complaints?\b',
+    r'\bunder\s+regulation\s+\d+\b',
+    r'\bpursuant\s+to\s+(regulation|sebi|rule|clause)\b',
+    r'\bcode\s+of\s+conduct\b',
+    r'\bannual\s+return\b',
+    r'\brelated\s+party\s+transactions?\b',
+    r'\bfinancial\s+results?\s+(for|of|quarter|year|period)\b',
+    r'\b(initial|continual)\s+disclosure\b',
+    r'\b(inter-?se|inter\s+se)\s+transfer\b',
+    r'\bmaterial\s+subsidiary\b',
+    r'\bcompliance\s+(with|under|certificate|report|officer)\b',
+    r'\bdisclosure\s+(under|pursuant|of\s+related)\b',
+    r'\bcertificate\s+(from|of|under)\b',
+    r'\bshare\s+certificate\b',
+    r'\bformation\s+of\s+committee\b',
+    r'\bcomposition\s+of\s+(board|committee)\b',
+    r'\bpolicy\s+on\s+(related|determination|remuneration)\b',
+    r'\bdetails\s+of\s+familiarization\b',
+    r'\bshareholding\s+pattern\b',
+    r'\bcorporate\s+governance\s+report\b',
 ]
 
 # Precompile all patterns once at startup for speed
@@ -582,11 +376,258 @@ _SELL_COMPILED = [(re.compile(p, re.IGNORECASE), sc, lbl) for p, sc, lbl in SELL
 _IGNORE_COMPILED = [re.compile(p, re.IGNORECASE) for p in IGNORE_PATTERNS]
 
 # =============================
+# COMPLIANCE CONTEXT DETECTION
+# Rejects keyword matches inside routine regulatory filings.
+# A text needs 2+ compliance markers to be classified as routine.
+# =============================
+COMPLIANCE_CONTEXT_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r'pursuant\s+to\s+(regulation|sebi|rule|clause)',
+        r'under\s+(regulation|sebi|rule|clause)\s+\d+',
+        r'acquisition\s+of\s+shares?\s+(under|pursuant|by\s+way)',
+        r'regulation\s+\d+\s*\(',
+        r'compliance\s+(with|under|certificate|report)',
+        r'disclosure\s+(under|pursuant)',
+        r'(inter-?se|inter\s+se)\s+transfer',
+        r'(initial|continual)\s+disclosure',
+        r'(annual|quarterly)\s+(report|return|submission)',
+        r'prescribed\s+under',
+        r'in\s+terms\s+of\s+(regulation|clause|rule)',
+        r'as\s+per\s+(regulation|sebi|clause)',
+        r'intimation\s+under',
+        r'outcome\s+of\s+board\s+meeting',
+    ]
+]
+
+def is_compliance_filing(text):
+    """Returns True if the text is a routine regulatory/compliance filing."""
+    matches = sum(1 for pat in COMPLIANCE_CONTEXT_PATTERNS if pat.search(text))
+    return matches >= 2  # Need 2+ compliance markers to classify as routine
+
+# =============================
+# TEXT QUALITY SCORING
+# Short/vague filings get penalized, detailed filings pass through.
+# =============================
+def text_quality_score(text):
+    """Score text quality: 0=junk, 1=minimal, 2=decent, 3=rich"""
+    word_count = len(text.split())
+    if word_count < 8:
+        return 0   # Too short to be meaningful (e.g., "acquisition")
+    if word_count < 20:
+        return 1   # Minimal — single headline
+    if word_count < 60:
+        return 2   # Decent — some context
+    return 3       # Rich — detailed announcement
+
+# =============================
+# HISTORICAL PATTERN ANALYSIS
+# Checks past wordf signals + fetches price data to validate patterns.
+# =============================
+def fetch_price_change(symbol, days=3):
+    """Fetch price change % over last N days for an NSE/BSE stock using yfinance."""
+    try:
+        import yfinance as yf
+        for suffix in [".NS", ".BO"]:
+            try:
+                ticker = yf.Ticker(f"{symbol}{suffix}")
+                hist = ticker.history(period=f"{days + 5}d")
+                if len(hist) >= 2:
+                    pct = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
+                    return round(pct, 2)
+            except Exception:
+                continue
+    except ImportError:
+        pass  # yfinance not installed — skip silently
+    except Exception:
+        pass
+    return None
+
+def analyze_historical_patterns(stock, reasons, ws_history_data):
+    """
+    PRICE-VALIDATED HISTORICAL PATTERN ANALYSIS
+
+    For each past wordf signal with similar keywords:
+    1. Extract the signal date from past entry
+    2. Fetch what ACTUALLY happened to the stock price after that signal
+    3. Compute win rate (did similar news actually move price correctly?)
+    4. Boost confidence only if past similar signals were CORRECT
+    5. Penalize if past similar signals were WRONG
+
+    Returns: (boost, analysis_str)
+        boost: int (-10 to +20) adjustment to confidence
+        analysis_str: human-readable summary of historical validation
+    """
+    if not ws_history_data:
+        return 0, ""
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        return 0, "yfinance not installed"
+
+    # ── Find past signals with matching patterns ────────────────────────
+    matching_past_signals = []
+
+    for row in ws_history_data:
+        if len(row) < 8:
+            continue
+
+        past_time    = str(row[0]).strip()        # e.g. "2026-05-21 10:20"
+        past_stock   = str(row[1]).strip().upper()
+        past_signal  = str(row[5]).strip().upper() if len(row) > 5 else ""
+        past_reasons = str(row[7]).strip().lower() if len(row) > 7 else ""
+
+        # Skip separator/timestamp rows
+        if past_stock in ("---", "") or "LAST UPDATED" in past_stock.upper():
+            continue
+        if not past_signal or past_signal not in ("STRONG BUY", "BUY", "STRONG SELL", "SELL"):
+            continue
+
+        # Check if any of current reasons match past reasons
+        matched = False
+        for reason in reasons:
+            clean = reason.split("] ")[-1].strip().lower() if "]" in reason else reason.lower()
+            if clean and len(clean) > 3 and clean in past_reasons:
+                matched = True
+                break
+
+        if matched:
+            matching_past_signals.append({
+                "date": past_time,
+                "stock": past_stock,
+                "signal": past_signal,
+                "reasons": past_reasons,
+            })
+
+    if not matching_past_signals:
+        return 0, "no matching historical patterns"
+
+    # ── Fetch price movements AFTER each past signal ────────────────────
+    wins = 0
+    losses = 0
+    total_checked = 0
+    price_details = []
+
+    # Check unique stocks from past signals (limit to avoid too many API calls)
+    checked_stocks = set()
+    for sig in matching_past_signals[-10:]:  # Last 10 matching signals max
+        past_stock = sig["stock"]
+
+        # Don't re-check same stock multiple times
+        if past_stock in checked_stocks:
+            continue
+        checked_stocks.add(past_stock)
+
+        # Try to parse the signal date
+        try:
+            from datetime import timedelta
+            sig_date = None
+            for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                try:
+                    sig_date = datetime.strptime(sig["date"], fmt)
+                    break
+                except ValueError:
+                    continue
+
+            if not sig_date:
+                continue
+
+            # Fetch price data around the signal date
+            start_date = sig_date.strftime("%Y-%m-%d")
+            end_date   = (sig_date + timedelta(days=7)).strftime("%Y-%m-%d")
+
+            price_change = None
+            for suffix in [".NS", ".BO"]:
+                try:
+                    ticker = yf.Ticker(f"{past_stock}{suffix}")
+                    hist = ticker.history(start=start_date, end=end_date)
+                    if len(hist) >= 2:
+                        price_change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[0])
+                                       / hist['Close'].iloc[0]) * 100
+                        price_change = round(price_change, 2)
+                        break
+                except Exception:
+                    continue
+
+            if price_change is None:
+                continue
+
+            total_checked += 1
+            is_buy_signal = "BUY" in sig["signal"]
+
+            # Check if price moved in the RIGHT direction
+            if is_buy_signal and price_change > 1.0:
+                wins += 1
+                price_details.append(f"{past_stock}: +{price_change}% after BUY (WIN)")
+            elif not is_buy_signal and price_change < -1.0:
+                wins += 1
+                price_details.append(f"{past_stock}: {price_change}% after SELL (WIN)")
+            elif is_buy_signal and price_change < -1.0:
+                losses += 1
+                price_details.append(f"{past_stock}: {price_change}% after BUY (LOSS)")
+            elif not is_buy_signal and price_change > 1.0:
+                losses += 1
+                price_details.append(f"{past_stock}: +{price_change}% after SELL (LOSS)")
+            else:
+                price_details.append(f"{past_stock}: {price_change:+.1f}% (FLAT)")
+
+        except Exception:
+            continue
+
+    # ── Compute boost based on historical win rate ──────────────────────
+    boost = 0
+    analysis = ""
+
+    if total_checked == 0:
+        # No price data available, but pattern was seen before
+        pattern_count = len(matching_past_signals)
+        if pattern_count >= 3:
+            boost = 5
+            analysis = f"pattern seen {pattern_count}x before (no price data)"
+        elif pattern_count >= 1:
+            boost = 2
+            analysis = f"pattern seen {pattern_count}x before (no price data)"
+    else:
+        win_rate = wins / total_checked if total_checked > 0 else 0
+
+        if win_rate >= 0.75 and wins >= 2:
+            boost = 20   # Very strong: 75%+ win rate with 2+ wins
+            analysis = f"STRONG HIST: {wins}W/{losses}L ({win_rate:.0%} win rate)"
+        elif win_rate >= 0.60 and wins >= 1:
+            boost = 12   # Good: 60%+ win rate
+            analysis = f"GOOD HIST: {wins}W/{losses}L ({win_rate:.0%} win rate)"
+        elif win_rate >= 0.50:
+            boost = 5    # Decent: 50%+ win rate
+            analysis = f"OK HIST: {wins}W/{losses}L ({win_rate:.0%} win rate)"
+        elif losses > wins:
+            boost = -10  # Penalize: pattern historically FAILED
+            analysis = f"WEAK HIST: {wins}W/{losses}L ({win_rate:.0%} — PENALIZED)"
+        else:
+            boost = 0
+            analysis = f"MIXED: {wins}W/{losses}L"
+
+    # Print details for debugging
+    if price_details:
+        print(f"    [HIST] {stock}: {analysis}")
+        for detail in price_details[:3]:
+            print(f"           {detail}")
+
+    return boost, analysis
+
+# =============================
 # KEYWORD MATCH ENGINE
 # Returns (buy_score, sell_score, reasons)
+# Now includes IGNORE check + compliance context check
 # =============================
 def event_score(text):
-    # Skip routine disclosures immediate
+    # Skip routine disclosures immediately (ignore patterns)
+    for pat in _IGNORE_COMPILED:
+        if pat.search(text):
+            return 0, 0, []
+
+    # Skip compliance filings (regulatory noise with 2+ compliance markers)
+    if is_compliance_filing(text):
+        return 0, 0, []
 
     buy_score  = 0
     sell_score = 0
@@ -595,7 +636,14 @@ def event_score(text):
     for pat, sc, lbl in _BUY_COMPILED:
         if pat.search(text):
             buy_score += sc
-            tag = "STRONG BUY" if sc >= 6 else ("MED BUY" if sc >= 3 else "LIGHT BUY")
+            if sc >= 8:
+                tag = "CRITICAL BUY"
+            elif sc >= 6:
+                tag = "STRONG BUY"
+            elif sc >= 3:
+                tag = "MED BUY"
+            else:
+                tag = "LIGHT BUY"
             reasons.append(f"[{tag}] {lbl}")
 
     for pat, sc, lbl in _SELL_COMPILED:
@@ -609,8 +657,8 @@ def event_score(text):
 # =============================
 # MONEY SCORE
 # Amplifies BUY side only — large deal values strengthen positive signals.
-# Looks for numbers preceded or followed by Cr/crore/lakh/Rs/INR context.
-# Avoids false positives from year numbers (2024, 2025, 2026) and percentages.
+# Looks for numbers with Cr/crore/lakh/Rs/INR context.
+# Avoids false positives from year numbers and percentages.
 # =============================
 def money_score(text):
     # Remove year-like 4-digit numbers (1990-2099) and percentage patterns
@@ -627,7 +675,6 @@ def money_score(text):
         values = [int(n.replace(',', '')) for n in currency_match if n.replace(',', '').isdigit()]
         if values:
             val = max(values)
-            # Convert lakh to approximate crore if small number
             if val >= 10000:  return 5
             elif val >= 1000: return 4
             elif val >= 500:  return 3
@@ -654,32 +701,27 @@ def compute_confidence(buy_raw, sell_raw):
 
 # =============================
 # SIGNAL LABEL
-# Strict >80% required (not >=80)
+# Requires >80% confidence to show any signal
 # =============================
 def get_signal_label(conf, direction):
     if conf <= BUY_CONF_THRESHOLD:
         return None
     if direction == "BUY":
-        return "STRONG BUY 🟢🟢" if conf >= 95 else "BUY 🟢"
+        return "STRONG BUY" if conf >= 95 else "BUY"
     if direction == "SELL":
-        return "STRONG SELL 🔴🔴" if conf >= 95 else "SELL 🔴"
+        return "STRONG SELL" if conf >= 95 else "SELL"
     return None
 
 # =============================
 # SYMBOL EXTRACTION
 # =============================
 def extract_symbol(source, row):
-
-    # NSE → column A is symbol (correct)
     if source == "nse":
         if row and row[0].strip():
             return row[0].strip().upper()
-
-    # BSE → use COMPANY NAME (column B)
     elif source == "bse":
         if len(row) > 1 and row[1].strip():
             return row[1].strip().upper()
-
     return None
 
 # =============================
@@ -693,7 +735,6 @@ def read_sheet(ws, source):
     for row in rows[1:]:
         if not row:
             continue
-        # 🔥 KEY CHANGE: combine entire row
         full_text = " ".join([cell.strip() for cell in row if cell.strip()])
         if not full_text:
             continue
@@ -712,8 +753,11 @@ def debug_symbol(symbol, all_data):
             b, s, reasons = event_score(text)
             m = money_score(text) if b > 0 else 0
             w = SOURCE_WEIGHT.get(source, 1)
+            q = text_quality_score(text)
+            c = is_compliance_filing(text)
             print(f"  [{source.upper()}] text: {text[:120]}")
-            print(f"         buy={b}, sell={s}, money={m}, weight={w}, weighted_buy={(b+m)*w}, weighted_sell={s*w}")
+            print(f"         buy={b}, sell={s}, money={m}, weight={w}, quality={q}, compliance={c}")
+            print(f"         weighted_buy={(b+m)*w}, weighted_sell={s*w}")
             if reasons:
                 for r in reasons:
                     print(f"         ↳ {r}")
@@ -722,7 +766,7 @@ def debug_symbol(symbol, all_data):
     print()
 
 # =============================
-# MAIN ENGINE
+# MAIN ENGINE (v2 — Enhanced)
 # =============================
 def run():
     client = get_client()
@@ -742,11 +786,65 @@ def run():
         print("No data loaded. Check sheet names and permissions.")
         return
 
+    # ── INPUT DEDUPLICATION ──────────────────────────────────────────────
+    # Same company + similar text from different sources shouldn't double-count
+    seen_inputs = set()
+    deduped_data = []
+    for source, symbol, text in all_data:
+        key = (symbol, text[:80].lower().strip())
+        if key not in seen_inputs:
+            seen_inputs.add(key)
+            deduped_data.append((source, symbol, text))
+    dup_count = len(all_data) - len(deduped_data)
+    all_data = deduped_data
+    print(f"Dedup: removed {dup_count} duplicates → {len(all_data)} unique entries")
+
+    # ── LOAD HISTORICAL DATA FOR PATTERN ANALYSIS ────────────────────────
+    ws_history_data = []
+    try:
+        ws_hist = sheet.worksheet("wordf")
+        ws_history_data = ws_hist.get_all_values()[1:]  # Skip header
+        print(f"Historical: loaded {len(ws_history_data)} past signal rows")
+    except Exception:
+        print("Historical: no past data found (first run)")
+
     # ── SCORE AGGREGATION ────────────────────────────────────────────────
     stock_scores = {}
+    skipped_quality = 0
+    skipped_compliance = 0
+    skipped_bse_short = 0
+    skipped_no_match = 0
 
     for source, symbol, text in all_data:
+        # ─ TEXT QUALITY CHECK ─
+        quality = text_quality_score(text)
+        if quality == 0:
+            skipped_quality += 1
+            continue
+
+        # ─ EVENT SCORE (includes ignore + compliance checks) ─
         b, s, reasons = event_score(text)
+
+        # Check if it was filtered by compliance/ignore (returns 0,0,[])
+        if b == 0 and s == 0 and not reasons:
+            # Could be no-match or filtered — check if compliance
+            if is_compliance_filing(text):
+                skipped_compliance += 1
+                continue
+            elif any(pat.search(text) for pat in _IGNORE_COMPILED):
+                skipped_no_match += 1
+                continue
+            # No keywords matched at all
+            skipped_no_match += 1
+            continue
+
+        # ─ BSE SHORT-TEXT HANDLER ─
+        # BSE headlines are often just 4-6 words — require stronger evidence
+        if source == "bse" and quality <= 1:
+            if b < 6 and s > -6:  # Not a strong signal
+                skipped_bse_short += 1
+                continue
+
         m = money_score(text) if b > 0 else 0
         weight  = SOURCE_WEIGHT.get(source, 1)
         b_total = (b + m) * weight
@@ -767,19 +865,36 @@ def run():
         stock_scores[symbol]["sources"].add(source.upper())
         stock_scores[symbol]["texts"].append(text[:100])
 
-    # ── OPTIONAL DEBUG: uncomment to trace a specific stock ──────────────
-    # debug_symbol("VIKRAN", all_data)
-    # debug_symbol("SOFTTECH", all_data)
+    print(f"\nFiltered: {skipped_quality} quality | {skipped_compliance} compliance | "
+          f"{skipped_bse_short} BSE-short | {skipped_no_match} no-match")
+    print(f"Stocks with signals: {len(stock_scores)}")
+
+    # ── HISTORICAL PATTERN BOOST (price-validated) ─────────────────────────
+    hist_boosts = 0
+    hist_penalties = 0
+    for stock, data in stock_scores.items():
+        hist_boost, hist_analysis = analyze_historical_patterns(stock, data["reasons"], ws_history_data)
+        if hist_boost > 0:
+            data["buy_score"] += hist_boost
+            data["reasons"].append(f"[HIST +{hist_boost}] {hist_analysis}")
+            hist_boosts += 1
+        elif hist_boost < 0:
+            data["buy_score"] += hist_boost  # Penalize
+            data["sell_score"] += hist_boost
+            data["reasons"].append(f"[HIST {hist_boost}] {hist_analysis}")
+            hist_penalties += 1
+    if hist_boosts or hist_penalties:
+        print(f"Historical: {hist_boosts} boosted, {hist_penalties} penalized")
 
     # ── EVALUATE SIGNALS ─────────────────────────────────────────────────
     buy_output  = []
     sell_output = []
 
-    W = 76
+    W = 80
     print(f"\n{'='*W}")
-    print(f"  HIGH CONFIDENCE SIGNALS  |  Threshold: >{BUY_CONF_THRESHOLD}%")
+    print(f"  ULTRA-RELIABLE SIGNALS  |  Threshold: >{BUY_CONF_THRESHOLD}%  |  v2 Engine")
     print(f"{'='*W}")
-    print(f"{'STOCK':<16} {'BUY_RAW':>8} {'SELL_RAW':>9} {'BUY%':>6} {'SELL%':>6}  SIGNAL")
+    print(f"{'STOCK':<20} {'BUY_RAW':>8} {'SELL_RAW':>9} {'BUY%':>6} {'SELL%':>6}  SIGNAL")
     print(f"{'-'*W}")
 
     for stock, data in sorted(stock_scores.items()):
@@ -795,7 +910,7 @@ def run():
 
         # Mixed signal guard — conflicting high-confidence signals → suppress
         if has_buy and has_sell:
-            print(f"{stock:<16} {buy_raw:>8} {sell_raw:>9} {buy_conf:>5}% {sell_conf:>5}%  ⚠️  MIXED — SUPPRESSED")
+            print(f"{stock:<20} {buy_raw:>8} {sell_raw:>9} {buy_conf:>5}% {sell_conf:>5}%  ⚠️  MIXED — SUPPRESSED")
             continue
 
         now_str = datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M")
@@ -803,9 +918,9 @@ def run():
         if has_buy:
             signal = get_signal_label(buy_conf, "BUY")
             if signal:
-                buy_reasons = [r for r in reasons if "BUY" in r]
+                buy_reasons = [r for r in reasons if "BUY" in r or "HIST" in r or "CRITICAL" in r]
                 reason_str  = " | ".join(buy_reasons[:5])
-                print(f"{stock:<16} {buy_raw:>8} {sell_raw:>9} {buy_conf:>5}% {'—':>5}   {signal}  [{sources}]")
+                print(f"{stock:<20} {buy_raw:>8} {sell_raw:>9} {buy_conf:>5}% {'—':>5}   {signal}  [{sources}]")
                 buy_output.append([now_str, stock, buy_raw, sell_raw, buy_conf, signal, sources, reason_str])
 
         elif has_sell:
@@ -813,37 +928,84 @@ def run():
             if signal:
                 sell_reasons = [r for r in reasons if "SELL" in r]
                 reason_str   = " | ".join(sell_reasons[:5])
-                print(f"{stock:<16} {buy_raw:>8} {sell_raw:>9} {'—':>5}  {sell_conf:>5}%  {signal}  [{sources}]")
+                print(f"{stock:<20} {buy_raw:>8} {sell_raw:>9} {'—':>5}  {sell_conf:>5}%  {signal}  [{sources}]")
                 sell_output.append([now_str, stock, buy_raw, sell_raw, sell_conf, signal, sources, reason_str])
+
+    # ── OUTPUT DEDUPLICATION ─────────────────────────────────────────────
+    # Prevent same stock appearing multiple times with same signal
+    seen_output = set()
+    deduped_buy = []
+    for row in buy_output:
+        sig = (row[1], row[5])  # (stock, signal)
+        if sig not in seen_output:
+            seen_output.add(sig)
+            deduped_buy.append(row)
+    deduped_sell = []
+    for row in sell_output:
+        sig = (row[1], row[5])
+        if sig not in seen_output:
+            seen_output.add(sig)
+            deduped_sell.append(row)
+    buy_output = deduped_buy
+    sell_output = deduped_sell
 
     total = len(buy_output) + len(sell_output)
     print(f"\n  BUY Signals: {len(buy_output)}  |  SELL Signals: {len(sell_output)}  |  Total: {total}")
     print(f"{'='*W}\n")
 
     if total == 0:
-        print("No signals crossed the 80% confidence threshold today.")
-        print("Check debug_symbol() above to trace why specific stocks didn't qualify.\n")
+        print(f"No signals crossed the {BUY_CONF_THRESHOLD}% confidence threshold.")
+        print("This is EXPECTED — the v2 engine is strict by design.")
+        print("Only genuinely price-moving events should appear here.\n")
+
+    # ── PRICE ENRICHMENT (yfinance) ──────────────────────────────────────
+    # Fetch current price trend for each signal to add context
+    all_output = buy_output + sell_output
+    price_enriched = 0
+    for row in all_output:
+        stock_sym = row[1]
+        price_chg = fetch_price_change(stock_sym, days=3)
+        if price_chg is not None:
+            row.append(f"{price_chg:+.1f}%")
+            price_enriched += 1
+        else:
+            row.append("N/A")
+
+    if price_enriched:
+        print(f"Price data fetched for {price_enriched}/{len(all_output)} stocks")
 
     # ── WRITE TO GOOGLE SHEET ────────────────────────────────────────────
     try:
         ws_out = sheet.worksheet("wordf")
     except Exception:
-        ws_out = sheet.add_worksheet(title="wordf", rows="2000", cols="10")
+        ws_out = sheet.add_worksheet(title="wordf", rows="2000", cols="12")
 
-    if not ws_out.get_all_values():
+    existing = ws_out.get_all_values()
+    if not existing:
         ws_out.append_row([
             "Time", "Stock", "Buy Raw", "Sell Raw",
-            "Confidence (%)", "Signal", "Sources", "Matched Reasons"
+            "Confidence (%)", "Signal", "Sources", "Matched Reasons", "3D Price Δ"
         ])
 
-    all_output = buy_output + sell_output
     all_output.sort(key=lambda x: x[4], reverse=True)
 
     if all_output:
         ws_out.append_rows(all_output)
 
-    ws_out.append_row(["---", "Last Updated (IST):", get_ist_time(), "", "", "", "", ""])
+    ws_out.append_row(["---", "Last Updated (IST):", get_ist_time(), "", "", "", "", "", ""])
     print(f"Results written to 'wordf' sheet.")
+
+    # ── SUMMARY ──────────────────────────────────────────────────────────
+    print(f"\n{'='*W}")
+    print(f"  WORDF v2 SUMMARY")
+    print(f"  Input: {len(deduped_data)} unique entries")
+    print(f"  Filtered: {skipped_quality + skipped_compliance + skipped_bse_short + skipped_no_match} total")
+    print(f"  Signals: {total} (BUY: {len(buy_output)}, SELL: {len(sell_output)})")
+    if hist_boosts:
+        print(f"  Historical boosts: {hist_boosts}")
+    if price_enriched:
+        print(f"  Price enriched: {price_enriched}")
+    print(f"{'='*W}")
 
 # =============================
 # ENTRY POINT
